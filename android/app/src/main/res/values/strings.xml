@@ -8,6 +8,7 @@
         <item quantity="many">Подключено · %d приложений через VPN</item>
         <item quantity="other">Подключено · %d приложения через VPN</item>
     </plurals>
+    <string name="status_reconnecting">Нет связи с VPN-сервером, переподключаюсь…</string>
     <string name="action_disconnect">Отключить</string>
     <string name="err_no_vpn_permission">Нет разрешения на VPN. Откройте приложение и подключитесь заново.</string>
     <string name="err_no_profile">Нет настроек подключения: сервер недоступен, а сохранённых настроек нет.</string>

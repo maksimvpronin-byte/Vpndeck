@@ -21,6 +21,9 @@
 - **Android** (`android/`) — Compose UI, `VpnDeckService` (VpnService + PlatformInterface libbox),
   ядро — sing-box **1.14.3** из `scripts/build-libbox.sh` (теги: `with_gvisor,with_utls`).
   Конфиг sing-box генерирует `ConfigBuilder.kt` (проверен `sing-box check`).
+  `TunnelWatchdog.kt` — сторож: раз в 4 мин и через 5 с после смены сети шлёт через туннель
+  `https://www.gstatic.com/generate_204`; если не проходит — запрашивает профиль напрямую (мимо туннеля)
+  и делает reload. Если и сервер входа недоступен — ничего не перезапускает, ретраи с бэкоффом до 15 мин.
 
 Контракт API: `POST /api/v1/login {username,password}` → `{token, profile}`;
 `GET /api/v1/profile` (Bearer) → profile. Формат profile — `server/xray.go` (`VlessServer`)
@@ -125,6 +128,11 @@ cd android && ./gradlew assembleRelease      # подпись — из keystore.
   release — только warn, и run-as недоступен).
 - Тест на эмуляторе: после `adb install -r` VpnDeck сам переподключается (MY_PACKAGE_REPLACED),
   следующий тап по кнопке его **выключит**. Ресивер STOP не экспортирован — `am broadcast` из adb не сработает.
+- Проверка восстановления без боевого сервера: поднять на Mac тестовый стенд — `setup-xray.sh` с
+  `XRAY_DIR=.deps/… XRAY_PORT=18443 XRAY_NAME=…`, vpndeck-server с `init -host 10.0.2.2 -listen 0.0.0.0:18448`
+  (эмулятор видит Mac как 10.0.2.2), сессию в debug-сборку положить через `run-as … shared_prefs/vpndeck.xml`.
+  Сменить параметры Xray на ходу, `adb shell svc wifi disable/enable` → в logcat `watchdog: … recovered`.
+  В локальном Docker маскировка `www.microsoft.com` не работала (EOF), `www.cloudflare.com` — работала.
 - Chrome на эмуляторе требует принять условия — для тестов отмечай `com.android.shell` и гоняй `nc`.
 
 ## Правила работы с этим репо

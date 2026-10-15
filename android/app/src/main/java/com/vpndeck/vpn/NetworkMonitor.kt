@@ -24,6 +24,10 @@ object NetworkMonitor {
 
     @Volatile
     private var listener: InterfaceUpdateListener? = null
+
+    /** Called when a new underlying network becomes the default (Wi-Fi <-> mobile). */
+    @Volatile
+    var onNetworkChanged: (() -> Unit)? = null
     private var registered = false
 
     private val handler by lazy { Handler(HandlerThread("network-monitor").apply { start() }.looper) }
@@ -63,6 +67,7 @@ object NetworkMonitor {
 
     @Synchronized
     fun stop() {
+        onNetworkChanged = null
         if (!registered) return
         runCatching { VpnDeckApp.connectivity.unregisterNetworkCallback(callback) }
         registered = false
@@ -75,8 +80,10 @@ object NetworkMonitor {
     }
 
     private fun update(network: Network?) {
+        val changed = network != null && network != defaultNetwork
         defaultNetwork = network
         notifyListener(network)
+        if (changed) onNetworkChanged?.invoke()
     }
 
     private fun notifyListener(network: Network?) {

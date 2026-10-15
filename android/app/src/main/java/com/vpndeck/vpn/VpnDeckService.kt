@@ -58,6 +58,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.net.InetAddress
 import java.net.NetworkInterface
 import io.nekohasekai.libbox.Notification as BoxNotification
@@ -79,6 +80,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     private var profile: Profile? = null
     private var refreshJob: Job? = null
     private var appsJob: Job? = null
+    private var watchdog: TunnelWatchdog? = null
     private var receiverRegistered = false
 
     private val receiver = object : BroadcastReceiver() {
@@ -150,6 +152,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
             startInForeground(runningText())
             scheduleRefresh()
             watchAppSelection()
+            startWatchdog()
         } catch (e: Exception) {
             Log.e(VpnDeckApp.TAG, "start failed", e)
             VpnState.fail(e.message ?: e.toString())
@@ -181,6 +184,8 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
         VpnState.set(VpnState.Status.Stopping)
         refreshJob?.cancel()
         appsJob?.cancel()
+        watchdog?.stop()
+        watchdog = null
         commandServer?.let { server ->
             runCatching { server.closeService() }.onFailure { Log.w(VpnDeckApp.TAG, "closeService", it) }
             runCatching { server.close() }
@@ -253,6 +258,35 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
                 delay(if (fresh != null) fresh.refreshIntervalSec * 1000 else 15 * 60_000L)
             }
         }
+    }
+
+    private fun startWatchdog() {
+        watchdog?.stop()
+        val dog = TunnelWatchdog(
+            isIdle = { getSystemService<PowerManager>()?.isDeviceIdleMode == true },
+            recover = {
+                // Direct over the real network, so it works even with the tunnel down.
+                val fresh = refreshProfileNow(10_000)
+                if (fresh != null) {
+                    withContext(serial) {
+                        if (commandServer != null) {
+                            val changed = fresh.raw != profile?.raw
+                            profile = fresh
+                            reload(if (changed) "server parameters changed" else "tunnel stopped passing traffic")
+                        }
+                    }
+                }
+                fresh != null
+            },
+            onHealthChanged = { healthy ->
+                if (VpnState.status.value == VpnState.Status.Running) {
+                    startInForeground(if (healthy) runningText() else getString(R.string.status_reconnecting))
+                }
+            },
+        )
+        NetworkMonitor.onNetworkChanged = { dog.kick() }
+        dog.start()
+        watchdog = dog
     }
 
     @OptIn(kotlinx.coroutines.FlowPreview::class)
