@@ -3,14 +3,18 @@
 # fresh keys, matching what vpndeck-server expects. Idempotent: refuses to
 # overwrite an existing config so a re-run can't silently rotate everyone's keys.
 #
-#   bash setup-xray.sh
+#   XRAY_SNI=<site> bash setup-xray.sh
 #
-# Tunables (env): XRAY_PORT=8443  XRAY_SNI=www.cloudflare.com  XRAY_DIR=/opt/xray-reality-8443
+# XRAY_SNI is required: pick a real site living in the server's own subnet with
+# find-sni.py. Big brands (www.cloudflare.com, amd.com, …) on a hosting IP are
+# exactly what Russian mobile DPI learned to block in 2026.
+#
+# Tunables (env): XRAY_PORT=443  XRAY_DIR=/opt/xray-reality-8443
 #                 XRAY_NAME=xray-reality-8443  XRAY_IMAGE=ghcr.io/xtls/xray-core:latest
 set -euo pipefail
 
-PORT=${XRAY_PORT:-8443}
-SNI=${XRAY_SNI:-www.cloudflare.com}
+PORT=${XRAY_PORT:-443}
+SNI=${XRAY_SNI:?set XRAY_SNI to a site found by find-sni.py}
 DIR=${XRAY_DIR:-/opt/xray-reality-8443}
 NAME=${XRAY_NAME:-xray-reality-8443}
 IMAGE=${XRAY_IMAGE:-ghcr.io/xtls/xray-core:latest}
@@ -70,7 +74,9 @@ cat > "$CONFIG" <<EOF
 EOF
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker run -d --name "$NAME" --restart unless-stopped \
+# --user 0:0: the config is root-only (0600) and the image runs as nonroot by
+# default, which fails with "permission denied" on the config.
+docker run -d --name "$NAME" --restart unless-stopped --user 0:0 \
   -p "$PORT:$PORT/tcp" \
   -v "$CONFIG:/etc/xray/config.json:ro" \
   "$IMAGE" run -config /etc/xray/config.json >/dev/null

@@ -7,7 +7,7 @@
 Телефон (VpnDeck)                         Сервер
   вход: адрес + логин + пароль  ──HTTPS:8448──▶  vpndeck-server  ──читает──▶ /opt/xray-reality-8443/config.json
   получает параметры VLESS Reality ◀──────────┘
-  sing-box (libbox) + VpnService ═══VLESS+Reality:8443═══▶ Xray (docker xray-reality-8443)
+  sing-box (libbox) + VpnService ═══VLESS+Reality:443═══▶ Xray (docker xray-reality-8443)
 ```
 
 - **server/** — `vpndeck-server`, Go без внешних зависимостей. Берёт параметры прямо из конфига Xray:
@@ -21,23 +21,26 @@
 
 ### Новый сервер с нуля
 
-Нужен Linux с Docker и root по SSH; порты 8443/tcp (VPN) и 8448/tcp (вход) свободны.
+Нужен Linux с Docker и root по SSH; порты 443/tcp (VPN) и 8448/tcp (вход) свободны.
 
 ```bash
-# 1. Xray VLESS+Reality со свежими ключами (на сервере)
-scp server/deploy/setup-xray.sh root@<IP>:/root/ && ssh root@<IP> bash /root/setup-xray.sh
+# 1. Подобрать сайт для маскировки среди соседей по подсети (на сервере)
+scp server/deploy/find-sni.py root@<IP>:/root/ && ssh root@<IP> python3 /root/find-sni.py
 
-# 2. vpndeck-server (с Mac)
+# 2. Xray VLESS+Reality со свежими ключами (на сервере)
+scp server/deploy/setup-xray.sh root@<IP>:/root/ && ssh root@<IP> XRAY_SNI=<сайт> bash /root/setup-xray.sh
+
+# 3. vpndeck-server (с Mac)
 server/deploy/deploy.sh root@<IP>
 
-# 3. Первичная настройка (на сервере)
+# 4. Первичная настройка (на сервере)
 vpndeck-server init -host <IP> -xray /opt/xray-reality-8443/config.json
 read -s P && echo "$P" | vpndeck-server passwd family
 systemctl enable --now vpndeck-server
 vpndeck-server fingerprint     # этот ключ телефон покажет при первом входе
 ```
 
-Если на сервере уже есть свой Xray с VLESS+Reality, шаг 1 пропустить и передать его конфиг в `-xray`.
+Если на сервере уже есть свой Xray с VLESS+Reality, шаги 1–2 пропустить и передать его конфиг в `-xray`.
 Подробная инструкция с проверками — в [CLAUDE.md](CLAUDE.md).
 
 ### Обслуживание

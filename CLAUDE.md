@@ -9,7 +9,7 @@
 ```
 Телефон (VpnDeck)
   ├─① HTTPS :8448 ──▶ vpndeck-server ──читает──▶ конфиг Xray
-  └─② VLESS+Reality :8443 ──▶ Xray (Docker) ──▶ интернет
+  └─② VLESS+Reality :443 ──▶ Xray (Docker) ──▶ интернет
 ```
 
 - **Xray** (`ghcr.io/xtls/xray-core`, контейнер `xray-reality-8443`) — сам VPN. Конфиг
@@ -33,6 +33,7 @@
 | `server/*.go` | vpndeck-server + тесты (`go test ./...`) |
 | `server/deploy/deploy.sh` | сборка под linux и установка/обновление бинарника по SSH (запуск с Mac) |
 | `server/deploy/setup-xray.sh` | создание Xray VLESS+Reality со свежими ключами (запуск на сервере) |
+| `server/deploy/find-sni.py` | поиск сайта для маскировки Reality среди соседей по подсети (запуск на сервере) |
 | `server/deploy/vpndeck-server.service` | systemd-юнит |
 | `scripts/build-libbox.sh` | сборка ядра в `android/app/libs/libbox.aar` (качает исходники в `.deps/`) |
 | `android/` | приложение; APK в `android/app/build/outputs/apk/` |
@@ -61,18 +62,20 @@ cd android && ./gradlew assembleRelease      # подпись — из keystore.
 ## Развёртывание на новом сервере
 
 Всё, что меняет сервер, — только после явного «да» пользователя. Перед началом посмотри,
-что на сервере уже есть (`docker ps`, `ss -tulpn`): порты 8443 и 8448 должны быть свободны,
-иначе выбери другие (`XRAY_PORT=…`, `init -listen :…`).
+что на сервере уже есть (`docker ps`, `ss -tulpn`): порты 443 и 8448 должны быть свободны,
+иначе выбери другие (`XRAY_PORT=…`, `init -listen :…`) — но 443 предпочтителен (см. «Подводные камни»).
 
 1. Доступ: `ssh root@<IP>` по ключу. Нужен Docker (`docker --version`); если нет —
    предложи пользователю поставить (`curl -fsSL https://get.docker.com | sh`), не ставь молча.
-2. Xray: скопировать и запустить `server/deploy/setup-xray.sh`
+2. Маскировка: `scp server/deploy/find-sni.py root@<IP>:/root/ && ssh root@<IP> python3 /root/find-sni.py`.
+   Выбрать сайт с живым контентом (не шаблон-заглушку, не панель) и показать пользователю кандидатов.
+3. Xray: скопировать и запустить `server/deploy/setup-xray.sh` с выбранным сайтом
    ```bash
-   scp server/deploy/setup-xray.sh root@<IP>:/root/ && ssh root@<IP> bash /root/setup-xray.sh
+   scp server/deploy/setup-xray.sh root@<IP>:/root/ && ssh root@<IP> XRAY_SNI=<сайт> bash /root/setup-xray.sh
    ```
    Скрипт откажется работать, если конфиг уже есть (защита от случайной смены ключей).
    Если на сервере уже есть свой Xray с VLESS+Reality — этот шаг пропустить и указать его конфиг в `-xray`.
-3. vpndeck-server: `server/deploy/deploy.sh root@<IP>`, затем на сервере
+4. vpndeck-server: `server/deploy/deploy.sh root@<IP>`, затем на сервере
    ```bash
    vpndeck-server init -host <IP> -xray /opt/xray-reality-8443/config.json
    read -s P && echo "$P" | vpndeck-server passwd family
@@ -81,12 +84,14 @@ cd android && ./gradlew assembleRelease      # подпись — из keystore.
    ```
    Пароль генерируй сам (`xxxx-xxxx-xxxx` из `abcdefghjkmnpqrstuvwxyz23456789`), передай
    пользователю в чате, в файлы репозитория не пиши.
-4. Файрвол: если активен ufw/iptables — открыть 8443/tcp и 8448/tcp.
-5. Проверка с Mac **с негативным контролем** (см. «Подводные камни»): логин curl'ом
+5. Файрвол: если активен ufw/iptables — открыть 443/tcp и 8448/tcp.
+6. Проверка с Mac **с негативным контролем** (см. «Подводные камни»): логин curl'ом
    (`-k`), затем sing-box CLI с mixed-inbound на параметрах из профиля → `curl -x socks5h://…`;
    потом то же с испорченным `public_key` — должно падать с `reality verification failed`.
    CLI собирается так: `cd .deps/sing-box && go build -tags with_gvisor,with_utls,badlinkname,tfogo_checklinkname0 -ldflags=-checklinkname=0 -o ../sing-box-cli ./cmd/sing-box`.
-6. Телефоны: в приложении «Выйти» → войти с новым адресом; появится диалог нового ключа.
+   Плюс: `curl --resolve <сайт>:443:<IP> https://<сайт>/` должен показать настоящий сайт маскировки.
+7. Телефоны: в приложении «Выйти» → войти с новым адресом; появится диалог нового ключа.
+8. Попроси пользователя проверить **на мобильном интернете** (не Wi-Fi) — именно там DPI.
 
 Удаление vpndeck-server: `systemctl disable --now vpndeck-server && rm -rf /etc/vpndeck /usr/local/bin/vpndeck-server /etc/systemd/system/vpndeck-server.service`.
 
@@ -98,6 +103,16 @@ cd android && ./gradlew assembleRelease      # подпись — из keystore.
   к API `ApiClient` шлёт через `NetworkMonitor.defaultNetwork` (мимо туннеля).
 - **`getInterfaces()` пропускает VPN-сети и упавшие интерфейсы.** Иначе умирающий tun при
   переподключении бросает ENODEV, ядро теряет весь список и ничего не маршрутизирует.
+- **Мобильные операторы РФ (МегаФон, 2026) режут Reality с маскировкой под большой бренд** на IP хостинга:
+  TCP устанавливается, а TLS ClientHello до сервера не доходит (на сервере видны SYN/ACK, но ни одного пакета с данными).
+  На Wi-Fi при этом работает. Лечение — маскировка под реальный сайт из той же подсети (`find-sni.py`) и порт 443.
+  Подсети VPN-хостингов забиты чужими Reality «под cloudflare/amd/twitch» — именно этот шаблон и ловят.
+- **Хостинг может резать входящий IPv4-UDP** (текущий режет всё, кроме ответов DNS): звонки Telegram/WhatsApp
+  через VPN не работают. Проверка: STUN-запрос с сервера (`stun.cloudflare.com:3478`) и tcpdump на внешнем интерфейсе.
+  IPv6-UDP там работает. Новый хостинг проверять на это до переезда.
+- **Xray в Docker запускать с `--user 0:0`**: конфиг 0600 root, а образ по умолчанию nonroot → `permission denied`.
+- **Приложение кэширует профиль до 6 часов**: после смены параметров Xray (порт, маскировка, ключи) телефоны
+  не подхватят их при простом переподключении — нужно «Выйти» → войти, либо ждать обновления.
 - **Не перегенерировать `/etc/vpndeck/tls.{crt,key}`** — все телефоны увидят «ключ изменился».
 - **Проверка «IP совпал с сервером» ничего не доказывает**: Mac пользователя сам выходит в
   интернет через VPN-сервер. Только негативный контроль или логи ядра (`outbound/vless[proxy]`).
@@ -121,4 +136,5 @@ cd android && ./gradlew assembleRelease      # подпись — из keystore.
 
 Адрес и детали рабочего сервера в репозиторий не пишутся (репо публичное): они в памяти
 Claude для этого проекта, иначе — спросить пользователя. На сервере кроме VpnDeck работают
-и другие сервисы пользователя — их не трогать.
+и другие сервисы пользователя — их не трогать. Контейнер Xray исторически называется
+`xray-reality-8443` и лежит в `/opt/xray-reality-8443/`, хотя слушает уже 443.
