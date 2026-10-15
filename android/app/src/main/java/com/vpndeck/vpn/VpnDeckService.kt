@@ -132,7 +132,10 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     private suspend fun start() {
         try {
             if (prepare(this) != null) error(getString(R.string.err_no_vpn_permission))
-            val current = Store.profile ?: refreshProfileNow() ?: error(getString(R.string.err_no_profile))
+            // Fresh parameters first, so server-side changes (port, camouflage, keys) apply on
+            // the next connect instead of after the 6-hour refresh. A short timeout keeps a
+            // slow or unreachable auth server from delaying the VPN; then the cache is used.
+            val current = refreshProfileNow(START_FETCH_TIMEOUT_MS) ?: Store.profile ?: error(getString(R.string.err_no_profile))
             profile = current
 
             registerReceiverOnce()
@@ -221,10 +224,10 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     }
 
     /** Fetches the profile directly (our own traffic never goes through the tunnel). */
-    private suspend fun refreshProfileNow(): Profile? {
+    private suspend fun refreshProfileNow(timeoutMs: Int = 15_000): Profile? {
         val session = Store.session.value ?: return null
         return try {
-            ApiClient.fetchProfile(session).also { Store.saveProfile(it) }
+            ApiClient.fetchProfile(session, timeoutMs).also { Store.saveProfile(it) }
         } catch (e: ApiClient.ApiException.Unauthorized) {
             VpnState.fail(e.message!!)
             null
@@ -527,6 +530,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     companion object {
         private const val NOTIFICATION_ID = 1
         const val LOG_FILE = "box.log"
+        private const val START_FETCH_TIMEOUT_MS = 5_000
         const val ACTION_STOP = "com.vpndeck.STOP"
 
         fun start(context: Context) {

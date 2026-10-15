@@ -71,8 +71,8 @@ object ApiClient {
             }
         }
 
-    suspend fun fetchProfile(session: Store.Session): Profile = withContext(Dispatchers.IO) {
-        val (code, text) = request(session.host, session.port, session.spkiPin, "GET", "/api/v1/profile", null, session.token)
+    suspend fun fetchProfile(session: Store.Session, timeoutMs: Int = TIMEOUT_MS): Profile = withContext(Dispatchers.IO) {
+        val (code, text) = request(session.host, session.port, session.spkiPin, "GET", "/api/v1/profile", null, session.token, timeoutMs)
         when (code) {
             200 -> Profile.parse(text)
             401 -> throw ApiException.Unauthorized()
@@ -80,7 +80,16 @@ object ApiClient {
         }
     }
 
-    private fun request(host: String, port: Int, pin: String, method: String, path: String, body: String?, token: String?): Pair<Int, String> {
+    private fun request(
+        host: String,
+        port: Int,
+        pin: String,
+        method: String,
+        path: String,
+        body: String?,
+        token: String?,
+        timeoutMs: Int = TIMEOUT_MS,
+    ): Pair<Int, String> {
         val url = URL("https", hostForUrl(host), port, path)
         // While the VPN is up our own UID is routed into the tunnel; talk to the auth
         // server over the real network so a broken tunnel can still be repaired by a refresh.
@@ -89,8 +98,8 @@ object ApiClient {
             conn.sslSocketFactory = pinnedContext(pin).socketFactory
             // The pinned key is the trust anchor; the name on a self-signed cert proves nothing extra.
             conn.hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
-            conn.connectTimeout = TIMEOUT_MS
-            conn.readTimeout = TIMEOUT_MS
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
             conn.requestMethod = method
             conn.useCaches = false
             conn.setRequestProperty("Accept", "application/json")
