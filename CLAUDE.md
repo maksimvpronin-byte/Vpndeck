@@ -39,6 +39,7 @@
 | `server/deploy/find-sni.py` | поиск сайта для маскировки Reality среди соседей по подсети (запуск на сервере) |
 | `server/deploy/vpndeck-server.service` | systemd-юнит |
 | `scripts/build-libbox.sh` | сборка ядра в `android/app/libs/libbox.aar` (качает исходники в `.deps/`) |
+| `scripts/release.sh` | выпуск версии: сборка, проверка подписи, тег, GitHub Release с APK |
 | `android/` | приложение; APK в `android/app/build/outputs/apk/` |
 
 В git **нет**: APK, `libbox.aar`, бинарников, `.deps/`, `dist/`, ключа подписи
@@ -61,6 +62,24 @@ cd android && ./gradlew assembleRelease      # подпись — из keystore.
 Если `android/keystore.properties` нет (новая машина) — release подпишется debug-ключом,
 и **обновление поверх уже установленных телефонов не встанет**. Ключ хранится у пользователя
 отдельно; спроси его, прежде чем генерировать новый.
+
+## Выпуск версии и самообновление
+
+```bash
+scripts/release.sh 0.1.4 "Что нового"     # чистое дерево на main, нужен android/keystore.properties
+```
+
+- Версия — в `android/version.properties`; `versionCode` вычисляется (`0.1.4` → `104`).
+  Версия 0.1.2 была собрана со старой схемой (`versionCode=3`) — всё новее неё заведомо больше.
+- Приложение (`update/Updater.kt`) с 0.1.3 само смотрит `releases/latest` репо `BuildConfig.UPDATE_REPO`
+  (при открытии — не чаще раза в 6 ч, из VPN-сервиса — раз в сутки с уведомлением), качает APK своей ABI
+  (`vpndeck-<ver>-<abi>-release.apk`, иначе `universal`), проверяет пакет/версию/**подпись** и ставит через
+  PackageInstaller. Первый раз Android спросит разрешение «установка неизвестных приложений» и подтверждение;
+  на Android 12+ дальше может ставить без вопросов (`USER_ACTION_NOT_REQUIRED`).
+- Скрипт откажется публиковать APK, подписанный не релизным ключом (`EXPECTED_CERT`): такой телефоны не примут.
+- Проверка апдейтера без выпуска фейковой версии: собрать «старую» сборку
+  `./gradlew assembleRelease -PvpndeckVersion=<текущая-1>.9` (например `0.1.3.9`, код как у 0.1.3) — не подходит;
+  нужен код меньше опубликованного: для опубликованной 0.1.4 — `-PvpndeckVersion=0.1.3.9`.
 
 ## Развёртывание на новом сервере
 

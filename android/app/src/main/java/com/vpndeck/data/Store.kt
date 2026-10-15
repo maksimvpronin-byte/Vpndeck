@@ -104,6 +104,17 @@ object Store {
         get() = prefs.getBoolean(K_START_ON_BOOT, true)
         set(value) = prefs.edit { putBoolean(K_START_ON_BOOT, value) }
 
+    // --- Self-update bookkeeping ---
+
+    var lastUpdateCheck: Long
+        get() = prefs.getLong(K_UPDATE_CHECK, 0)
+        set(value) = prefs.edit { putLong(K_UPDATE_CHECK, value) }
+
+    /** Version we already notified about, so the notification isn't repeated. */
+    var notifiedUpdate: String?
+        get() = prefs.getString(K_UPDATE_NOTIFIED, null)
+        set(value) = prefs.edit { putString(K_UPDATE_NOTIFIED, value) }
+
     private const val K_HOST = "host"
     private const val K_PORT = "port"
     private const val K_PIN = "spki_pin"
@@ -114,4 +125,6 @@ object Store {
     private const val K_APPS = "selected_apps"
     private const val K_WANT_CONNECTED = "want_connected"
     private const val K_START_ON_BOOT = "start_on_boot"
+    private const val K_UPDATE_CHECK = "update_check_at"
+    private const val K_UPDATE_NOTIFIED = "update_notified"
 }

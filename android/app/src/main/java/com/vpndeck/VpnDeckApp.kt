@@ -18,8 +18,11 @@ class VpnDeckApp : Application() {
         app = this
         Store.init(this)
 
-        getSystemService<NotificationManager>()!!.createNotificationChannel(
-            NotificationChannel(CHANNEL_SERVICE, getString(R.string.channel_service), NotificationManager.IMPORTANCE_LOW),
+        getSystemService<NotificationManager>()!!.createNotificationChannels(
+            listOf(
+                NotificationChannel(CHANNEL_SERVICE, getString(R.string.channel_service), NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(CHANNEL_UPDATES, getString(R.string.channel_updates), NotificationManager.IMPORTANCE_DEFAULT),
+            ),
         )
 
         runCatching { Libbox.setLocale(Locale.getDefault().toLanguageTag()) }
@@ -46,6 +49,7 @@ class VpnDeckApp : Application() {
     companion object {
         const val TAG = "VpnDeck"
         const val CHANNEL_SERVICE = "service"
+        const val CHANNEL_UPDATES = "updates"
         lateinit var app: VpnDeckApp
             private set
         val connectivity: ConnectivityManager by lazy { app.getSystemService()!! }

@@ -27,6 +27,7 @@ import com.vpndeck.data.ApiClient
 import com.vpndeck.data.Profile
 import com.vpndeck.data.Store
 import com.vpndeck.ui.MainActivity
+import com.vpndeck.update.Updater
 import io.nekohasekai.libbox.BridgeOptions
 import io.nekohasekai.libbox.BridgeSession
 import io.nekohasekai.libbox.CommandServer
@@ -81,6 +82,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     private var refreshJob: Job? = null
     private var appsJob: Job? = null
     private var watchdog: TunnelWatchdog? = null
+    private var updateJob: Job? = null
     private var receiverRegistered = false
 
     private val receiver = object : BroadcastReceiver() {
@@ -153,6 +155,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
             scheduleRefresh()
             watchAppSelection()
             startWatchdog()
+            scheduleUpdateCheck()
         } catch (e: Exception) {
             Log.e(VpnDeckApp.TAG, "start failed", e)
             VpnState.fail(e.message ?: e.toString())
@@ -186,6 +189,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
         appsJob?.cancel()
         watchdog?.stop()
         watchdog = null
+        updateJob?.cancel()
         commandServer?.let { server ->
             runCatching { server.closeService() }.onFailure { Log.w(VpnDeckApp.TAG, "closeService", it) }
             runCatching { server.close() }
@@ -258,6 +262,37 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
                 delay(if (fresh != null) fresh.refreshIntervalSec * 1000 else 15 * 60_000L)
             }
         }
+    }
+
+    /** Once a day: if GitHub has a newer release, tell the user once per version. */
+    private fun scheduleUpdateCheck() {
+        updateJob?.cancel()
+        updateJob = scope.launch {
+            delay(60_000)
+            while (true) {
+                val release = Updater.check()
+                if (release != null && Store.notifiedUpdate != release.version) {
+                    Store.notifiedUpdate = release.version
+                    notifyUpdate(release.version)
+                }
+                delay(24 * 3600_000L)
+            }
+        }
+    }
+
+    private fun notifyUpdate(version: String) {
+        val open = PendingIntent.getActivity(
+            this, 2, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = NotificationCompat.Builder(this, VpnDeckApp.CHANNEL_UPDATES)
+            .setSmallIcon(R.drawable.ic_tile)
+            .setContentTitle(getString(R.string.update_available_title))
+            .setContentText(getString(R.string.update_available_text, version))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        runCatching { getSystemService<android.app.NotificationManager>()?.notify(UPDATE_NOTIFICATION_ID, n) }
     }
 
     private fun startWatchdog() {
@@ -563,6 +598,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
 
     companion object {
         private const val NOTIFICATION_ID = 1
+        private const val UPDATE_NOTIFICATION_ID = 2
         const val LOG_FILE = "box.log"
         private const val START_FETCH_TIMEOUT_MS = 5_000
         const val ACTION_STOP = "com.vpndeck.STOP"

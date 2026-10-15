@@ -7,6 +7,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Version lives in android/version.properties (scripts/release.sh bumps it).
+// versionCode is derived: 0.1.3 -> 103, 1.2.10 -> 10210. -PvpndeckVersion=… overrides
+// it for test builds (e.g. an older-looking build to exercise the updater).
+val vpndeckVersion: String = (findProperty("vpndeckVersion") as String?)
+    ?: Properties().apply { rootProject.file("version.properties").inputStream().use { load(it) } }.getProperty("VERSION_NAME")
+val vpndeckVersionCode: Int = vpndeckVersion.split('.').map { it.toInt() }.let { p ->
+    require(p.size in 3..4 && p.all { it in 0..99 }) { "version must look like 0.1.3 (or 0.1.2.9 for tests)" }
+    p[0] * 10000 + p[1] * 100 + p[2] // a 4th part only marks test builds and doesn't count
+}
+
 // Release signing comes from android/keystore.properties (not in git).
 // Keep that keystore safe: phones only accept updates signed with the same key.
 val keystoreProps = Properties().apply {
@@ -24,9 +34,10 @@ android {
         applicationId = "com.vpndeck"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = vpndeckVersionCode
+        versionName = vpndeckVersion
         base.archivesName.set("vpndeck-$versionName")
+        buildConfigField("String", "UPDATE_REPO", "\"maksimvpronin-byte/Vpndeck\"")
     }
 
     signingConfigs {

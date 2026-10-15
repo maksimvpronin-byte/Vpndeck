@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,6 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,10 +55,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.getSystemService
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.vpndeck.BuildConfig
 import com.vpndeck.data.Store
+import com.vpndeck.update.Updater
 import com.vpndeck.vpn.VpnDeckService
 import com.vpndeck.vpn.VpnState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(modifier: Modifier, openApps: () -> Unit) {
@@ -90,7 +96,8 @@ fun HomeScreen(modifier: Modifier, openApps: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Spacer(Modifier.height(24.dp))
+        UpdateCard()
+        Spacer(Modifier.height(8.dp))
         ConnectButton(status) {
             when (status) {
                 VpnState.Status.Stopped -> connect()
@@ -132,6 +139,8 @@ fun HomeScreen(modifier: Modifier, openApps: () -> Unit) {
                 TextButton(onClick = { confirmLogout = true }) { Text("Выйти") }
             }
         }
+
+        VersionRow()
     }
 
     if (confirmLogout) {
@@ -240,5 +249,93 @@ fun plural(n: Int, one: String, few: String, many: String): String {
         n10 == 1 && n100 != 11 -> one
         n10 in 2..4 && n100 !in 12..14 -> few
         else -> many
+    }
+}
+
+@Composable
+private fun UpdateCard() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val state by Updater.state.collectAsState()
+
+    LifecycleResumeEffect(Unit) {
+        val st = Updater.state.value
+        if (st is Updater.State.NeedsPermission && ctx.packageManager.canRequestPackageInstalls()) {
+            // Came back from the "install unknown apps" screen with permission: carry on.
+            scope.launch { Updater.install(ctx, st.release) }
+        } else {
+            Updater.permissionReturned()
+            scope.launch { Updater.check() }
+        }
+        onPauseOrDispose {}
+    }
+
+    val release = when (val st = state) {
+        is Updater.State.Available -> st.release
+        is Updater.State.Downloading -> st.release
+        is Updater.State.NeedsPermission -> st.release
+        is Updater.State.Installing -> st.release
+        is Updater.State.Failed -> st.release
+        else -> null
+    } ?: return
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Доступна версия ${release.version}", style = MaterialTheme.typography.titleSmall)
+            when (val st = state) {
+                is Updater.State.Downloading -> {
+                    LinearProgressIndicator(progress = { st.percent / 100f }, modifier = Modifier.fillMaxWidth())
+                    Text("Загрузка… ${st.percent}%", style = MaterialTheme.typography.bodySmall)
+                }
+                is Updater.State.Installing -> Text("Установка…", style = MaterialTheme.typography.bodySmall)
+                is Updater.State.NeedsPermission -> {
+                    Text(
+                        "Разрешите VpnDeck устанавливать обновления — это нужно один раз.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(onClick = {
+                        ctx.startActivity(
+                            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")),
+                        )
+                    }) { Text("Разрешить") }
+                }
+                else -> {
+                    if (st is Updater.State.Failed) {
+                        Text(st.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Button(onClick = { scope.launch { Updater.install(ctx, release) } }) {
+                        Text(if (st is Updater.State.Failed) "Повторить" else "Обновить (${release.size / 1_048_576} МБ)")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VersionRow() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val state by Updater.state.collectAsState()
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "VpnDeck ${BuildConfig.VERSION_NAME}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(
+            enabled = state !is Updater.State.Checking && state !is Updater.State.Downloading,
+            onClick = {
+                scope.launch {
+                    if (Updater.check(force = true) == null && Updater.state.value is Updater.State.UpToDate) {
+                        Toast.makeText(ctx, "У вас последняя версия", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+        ) { Text(if (state is Updater.State.Checking) "Проверяю…" else "Проверить обновления") }
     }
 }
