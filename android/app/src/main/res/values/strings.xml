@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">VpnDeck</string>
+    <string name="channel_service">Состояние VPN</string>
+    <string name="status_starting">Подключение…</string>
+    <plurals name="status_running_apps">
+        <item quantity="one">Подключено · %d приложение через VPN</item>
+        <item quantity="few">Подключено · %d приложения через VPN</item>
+        <item quantity="many">Подключено · %d приложений через VPN</item>
+        <item quantity="other">Подключено · %d приложения через VPN</item>
+    </plurals>
+    <string name="action_disconnect">Отключить</string>
+    <string name="err_no_vpn_permission">Нет разрешения на VPN. Откройте приложение и подключитесь заново.</string>
+    <string name="err_no_profile">Нет настроек подключения: сервер недоступен, а сохранённых настроек нет.</string>
+    <string name="err_no_apps">Не выбрано ни одного приложения для VPN.</string>
+</resources>

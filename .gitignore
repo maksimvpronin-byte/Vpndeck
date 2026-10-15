@@ -1,0 +1,24 @@
+# third-party sources and tools fetched by scripts
+.deps/
+
+# build outputs and binaries — the repo holds sources only
+build/
+dist/
+*.apk
+*.aab
+*.aar
+android/app/libs/
+android/.gradle/
+android/.kotlin/
+server/vpndeck-server
+
+# machine-specific
+android/local.properties
+.idea/
+.DS_Store
+
+# signing secrets — back these up separately, never commit
+android/keystore/
+android/keystore.properties
+*.jks
+*.keystore

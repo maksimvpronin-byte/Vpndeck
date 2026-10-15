@@ -1,0 +1,25 @@
+[Unit]
+Description=VpnDeck auth/config API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/vpndeck-server -config /etc/vpndeck/server.json serve
+Restart=always
+RestartSec=3
+# Needs to read the root-owned Xray config, otherwise runs locked down.
+User=root
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/vpndeck
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target
