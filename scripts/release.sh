@@ -24,4 +24,11 @@ git add android/version.properties
 git diff --cached --quiet || git commit -q -m "Release $VERSION"
 git tag -a "v$VERSION" -m "$NOTES"
 git push -q origin main "v$VERSION"
-echo "v$VERSION pushed; build: $(gh run list --workflow release.yml --limit 1 --json url --jq '.[0].url' 2>/dev/null || echo 'gh run list')"
+# The run for the tag takes a few seconds to appear; don't print the previous one.
+url=""
+for _ in 1 2 3 4 5 6; do
+  sleep 5
+  url=$(gh run list --workflow release.yml --branch "v$VERSION" --limit 1 --json url --jq '.[0].url // empty' 2>/dev/null || true)
+  [ -n "$url" ] && break
+done
+echo "v$VERSION pushed; build: ${url:-see gh run list --workflow release.yml}"
