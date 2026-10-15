@@ -74,7 +74,11 @@ cd android && ./gradlew assembleRelease
 # APK: android/app/build/outputs/apk/release/vpndeck-*-universal-release.apk
 ```
 
-Релиз подписывается ключом из `android/keystore/` (пароли — в `android/keystore.properties`).
+Выпуск версии — через GitHub Actions: `scripts/release.sh 0.1.4 "что нового"` ставит тег, сборка и подпись
+идут в GitHub, получается черновик релиза; после публикации приложение на телефонах обновится само.
+
+Релиз подписывается ключом из `android/keystore/` (пароли — в `android/keystore.properties`); для GitHub
+он же лежит в секретах репо `ANDROID_KEYSTORE_BASE64` и `ANDROID_KEYSTORE_PASSWORD`.
 **Сохраните оба файла в надёжном месте**: обновления приложения ставятся поверх только с тем же ключом.
 
 ## Для пользователей

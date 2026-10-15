@@ -39,7 +39,9 @@
 | `server/deploy/find-sni.py` | поиск сайта для маскировки Reality среди соседей по подсети (запуск на сервере) |
 | `server/deploy/vpndeck-server.service` | systemd-юнит |
 | `scripts/build-libbox.sh` | сборка ядра в `android/app/libs/libbox.aar` (качает исходники в `.deps/`) |
-| `scripts/release.sh` | выпуск версии: сборка, проверка подписи, тег, GitHub Release с APK |
+| `scripts/release.sh` | выпуск версии: поднять версию, тег с «что нового», пуш → сборку делает GitHub Actions |
+| `scripts/verify-apks.sh` | проверка APK: все ABI, версия, подпись релизным ключом |
+| `.github/workflows/release.yml` | тег `v*` → сборка ядра и APK, подпись ключом из секретов, **черновик** релиза |
 | `android/` | приложение; APK в `android/app/build/outputs/apk/` |
 
 В git **нет**: APK, `libbox.aar`, бинарников, `.deps/`, `dist/`, ключа подписи
@@ -65,10 +67,19 @@ cd android && ./gradlew assembleRelease      # подпись — из keystore.
 
 ## Выпуск версии и самообновление
 
+Как в TerminalDeck/KubeDeck: тег собирает GitHub, публикация — отдельным шагом и только по просьбе пользователя.
+
 ```bash
-scripts/release.sh 0.1.4 "Что нового"     # чистое дерево на main, нужен android/keystore.properties
+scripts/release.sh 0.1.4 "Что нового"          # поднимает версию, тег с этим текстом, пушит
+gh run watch                                   # сборка ~10 мин (ядро кэшируется)
+gh release view v0.1.4 --json assets           # 4 APK: arm64-v8a, armeabi-v7a, x86_64, universal
+gh release edit v0.1.4 --draft=false --latest  # публикация → телефоны обновятся
 ```
 
+- Секреты репо: `ANDROID_KEYSTORE_BASE64` (keystore в base64) и `ANDROID_KEYSTORE_PASSWORD`
+  (store и key пароль одинаковые, alias `vpndeck`). Ставит их пользователь сам — пароли в чужие сервисы я не ввожу.
+  Без секретов тег не соберётся (ошибка), а ручной запуск соберёт тестовые APK с debug-подписью.
+- Локальная сборка (`./gradlew assembleRelease`) по-прежнему работает для тестов, но в релиз не идёт.
 - Версия — в `android/version.properties`; `versionCode` вычисляется (`0.1.4` → `104`).
   Версия 0.1.2 была собрана со старой схемой (`versionCode=3`) — всё новее неё заведомо больше.
 - Приложение (`update/Updater.kt`) с 0.1.3 само смотрит `releases/latest` репо `BuildConfig.UPDATE_REPO`
@@ -76,7 +87,7 @@ scripts/release.sh 0.1.4 "Что нового"     # чистое дерево �
   (`vpndeck-<ver>-<abi>-release.apk`, иначе `universal`), проверяет пакет/версию/**подпись** и ставит через
   PackageInstaller. Первый раз Android спросит разрешение «установка неизвестных приложений» и подтверждение;
   на Android 12+ дальше может ставить без вопросов (`USER_ACTION_NOT_REQUIRED`).
-- Скрипт откажется публиковать APK, подписанный не релизным ключом (`EXPECTED_CERT`): такой телефоны не примут.
+- `verify-apks.sh` (в CI) не пропустит APK, подписанный не релизным ключом (`EXPECTED_CERT`): такой телефоны не примут.
 - Проверка апдейтера без выпуска фейковой версии: собрать релизной подписью сборку «чуть старше»
   опубликованной — для опубликованной `0.1.4` это `./gradlew assembleRelease -PvpndeckVersion=0.1.3.9`
   (код 103 < 104), поставить на эмулятор и нажать «Проверить обновления».
