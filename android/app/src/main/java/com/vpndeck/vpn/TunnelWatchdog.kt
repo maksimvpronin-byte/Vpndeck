@@ -10,8 +10,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * Notices when the tunnel stops carrying traffic while the VPN looks "on" —
@@ -30,7 +28,6 @@ class TunnelWatchdog(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val kicks = Channel<Unit>(Channel.CONFLATED)
-    private var healthy = true
 
     fun start() {
         scope.launch { loop() }
@@ -54,10 +51,10 @@ class TunnelWatchdog(
                 delay(AFTER_KICK_MS) // let the new network settle and the core rebind
             }
             // One network switch arrives as several callbacks; they've all been answered by this check.
-            while (kicks.tryReceive().isSuccess) Unit
+            while (kicks.tryReceive().isSuccess) { /* coalesce network callbacks */ }
             if (isIdle()) continue
 
-            if (probe() || run { delay(CONFIRM_MS); probe() }) {
+            if (TunnelProbe.check() || run { delay(CONFIRM_MS); TunnelProbe.check() }) {
                 failures = 0
                 setHealthy(true)
                 continue
@@ -71,7 +68,7 @@ class TunnelWatchdog(
                 continue
             }
             delay(AFTER_RELOAD_MS)
-            if (probe()) {
+            if (TunnelProbe.check()) {
                 Log.i(VpnDeckApp.TAG, "watchdog: tunnel recovered")
                 failures = 0
                 setHealthy(true)
@@ -82,29 +79,10 @@ class TunnelWatchdog(
     }
 
     private fun setHealthy(value: Boolean) {
-        if (healthy == value) return
-        healthy = value
         onHealthChanged(value)
     }
 
-    private fun probe(): Boolean = try {
-        val conn = URL(PROBE_URL).openConnection() as HttpURLConnection
-        try {
-            conn.connectTimeout = PROBE_TIMEOUT_MS
-            conn.readTimeout = PROBE_TIMEOUT_MS
-            conn.instanceFollowRedirects = false
-            conn.useCaches = false
-            conn.responseCode == 204
-        } finally {
-            conn.disconnect()
-        }
-    } catch (_: Exception) {
-        false
-    }
-
     private companion object {
-        const val PROBE_URL = "https://www.gstatic.com/generate_204"
-        const val PROBE_TIMEOUT_MS = 8_000
         const val INTERVAL_MS = 4 * 60_000L
         const val AFTER_KICK_MS = 5_000L
         const val CONFIRM_MS = 5_000L

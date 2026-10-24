@@ -150,9 +150,10 @@ object Updater {
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else @Suppress("DEPRECATION") PackageManager.GET_SIGNATURES
         val archive = pm.getPackageArchiveInfo(file.path, flags) ?: error("Файл обновления повреждён")
         val installed = pm.getPackageInfo(context.packageName, flags)
-        require(archive.packageName == context.packageName) { "Это не VpnDeck" }
-        require(versionCode(archive) > versionCode(installed)) { "Версия не новее установленной" }
-        require(signers(archive) == signers(installed)) { "Подпись обновления не совпадает — установка отменена" }
+        requireTrustedUpdate(
+            archive.packageName, context.packageName,
+            versionCode(archive), versionCode(installed), signers(archive), signers(installed),
+        )
     }
 
     private fun versionCode(p: PackageInfo): Long =

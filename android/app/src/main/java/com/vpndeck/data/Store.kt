@@ -1,5 +1,7 @@
 package com.vpndeck.data
 
+import android.os.Build
+import java.util.UUID
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
@@ -23,6 +25,13 @@ object Store {
         _session.value = readSession()
     }
 
+    val deviceName: String get() = "${Build.MANUFACTURER} ${Build.MODEL}".take(80)
+
+    val deviceId: String
+        @Synchronized get() = prefs.getString("device_id", null) ?: UUID.randomUUID().toString().also { id ->
+            prefs.edit(commit = true) { putString("device_id", id) }
+        }
+
     // --- Session: where the server is, how we trust it, and who we are ---
 
     data class Session(
@@ -40,6 +49,7 @@ object Store {
         return Session(host, prefs.getInt(K_PORT, ApiClient.DEFAULT_PORT), pin, prefs.getString(K_ACCOUNT, "")!!, token)
     }
 
+    @Synchronized
     fun saveLogin(session: Session, profile: Profile) {
         prefs.edit(commit = true) {
             putString(K_HOST, session.host)
@@ -53,7 +63,15 @@ object Store {
         _session.value = session
     }
 
+    @Synchronized
+    fun saveSessionIfCurrent(expected: Session, token: String, profile: Profile): Boolean {
+        if (_session.value != expected) return false
+        saveLogin(expected.copy(token = token), profile)
+        return true
+    }
+
     /** Forget the account but keep the server address, pin and app list for the next login. */
+    @Synchronized
     fun logout() {
         prefs.edit(commit = true) {
             remove(K_TOKEN)

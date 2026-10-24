@@ -9,13 +9,29 @@ on:
   push:
     tags:
       - 'v*'
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: false
+      - name: Server tests and static checks
+        working-directory: server
+        run: |
+          go test -race ./...
+          go vet ./...
+
   build:
+    needs: server
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -85,6 +101,10 @@ jobs:
             echo "keyAlias=vpndeck"
             echo "keyPassword=$KEYSTORE_PASSWORD"
           } > android/keystore.properties
+
+      - name: Android tests and lint
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest lintRelease
 
       - name: Build the APKs
         working-directory: android

@@ -14,15 +14,18 @@ import (
 // It is re-read on every request, so `vpndeck-server passwd` takes effect
 // without a restart.
 type Config struct {
-	Listen      string `json:"listen"`       // e.g. ":8448"
-	PublicHost  string `json:"public_host"`  // address clients dial for the VPN itself
-	XrayConfig  string `json:"xray_config"`  // path to the Xray config holding the Reality inbound
-	InboundTag  string `json:"inbound_tag"`  // which inbound to hand out; empty = first VLESS+Reality one
-	Fingerprint string `json:"fingerprint"`  // uTLS fingerprint the client should mimic
-	TokenSecret string `json:"token_secret"` // HMAC key for session tokens
-	TLSCert     string `json:"tls_cert"`
-	TLSKey      string `json:"tls_key"`
-	Users       []User `json:"users"`
+	Listen             string   `json:"listen"`       // e.g. ":8448"
+	PublicHost         string   `json:"public_host"`  // address clients dial for the VPN itself
+	XrayConfig         string   `json:"xray_config"`  // path to the Xray config holding the Reality inbound
+	InboundTag         string   `json:"inbound_tag"`  // which inbound to hand out; empty = first VLESS+Reality one
+	Fingerprint        string   `json:"fingerprint"`  // uTLS fingerprint the client should mimic
+	TokenSecret        string   `json:"token_secret"` // HMAC key for session tokens
+	TLSCert            string   `json:"tls_cert"`
+	TLSKey             string   `json:"tls_key"`
+	Users              []User   `json:"users"`
+	ManageDevices      bool     `json:"manage_devices,omitempty"`
+	XrayRestartCommand []string `json:"xray_restart_command,omitempty"`
+	Devices            []Device `json:"devices,omitempty"`
 }
 
 type User struct {
@@ -67,11 +70,7 @@ func saveConfig(path string, c *Config) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicWrite(path, append(data, '\n'), 0o600)
 }
 
 func (c *Config) user(name string) *User {

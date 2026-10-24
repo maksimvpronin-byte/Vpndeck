@@ -6,6 +6,17 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** Process-wide VPN status the UI, tile and notification observe. */
 object VpnState {
+    enum class Health { Unknown, Checking, Healthy, Recovering }
+    private val _health = MutableStateFlow(Health.Unknown)
+    val health: StateFlow<Health> = _health.asStateFlow()
+    val apiResult = MutableStateFlow("Ещё не проверен")
+    val healthCheckedAt = MutableStateFlow(0L)
+
+    internal fun setHealth(health: Health) {
+        _health.value = health
+        healthCheckedAt.value = System.currentTimeMillis()
+    }
+
     enum class Status { Stopped, Starting, Running, Stopping }
 
     private val _status = MutableStateFlow(Status.Stopped)
@@ -21,7 +32,9 @@ object VpnState {
 
     internal fun set(status: Status) {
         _status.value = status
+        if (status == Status.Stopped) _health.value = Health.Unknown
         if (status == Status.Running) {
+            _health.value = Health.Checking
             _since.value = System.currentTimeMillis()
             _error.value = null
         }

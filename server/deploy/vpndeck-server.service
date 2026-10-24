@@ -12,6 +12,7 @@ User=root
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/etc/vpndeck
+ReadWritePaths=-/opt/xray-reality-8443
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

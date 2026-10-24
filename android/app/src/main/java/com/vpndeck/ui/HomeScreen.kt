@@ -67,6 +67,7 @@ import kotlinx.coroutines.launch
 fun HomeScreen(modifier: Modifier, openApps: () -> Unit) {
     val ctx = LocalContext.current
     val status by VpnState.status.collectAsState()
+    val health by VpnState.health.collectAsState()
     val error by VpnState.error.collectAsState()
     val since by VpnState.since.collectAsState()
     val apps by Store.selectedApps.collectAsState()
@@ -109,12 +110,16 @@ fun HomeScreen(modifier: Modifier, openApps: () -> Unit) {
             when (status) {
                 VpnState.Status.Stopped -> "Отключено"
                 VpnState.Status.Starting -> "Подключение…"
-                VpnState.Status.Running -> "Подключено"
+                VpnState.Status.Running -> when (health) {
+                    VpnState.Health.Healthy -> "Подключено"
+                    VpnState.Health.Recovering -> "Восстанавливаем соединение…"
+                    else -> "Проверяем соединение…"
+                }
                 VpnState.Status.Stopping -> "Отключение…"
             },
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.SemiBold,
-            color = if (status == VpnState.Status.Running) Connected else MaterialTheme.colorScheme.onSurface,
+            color = if (status == VpnState.Status.Running && health == VpnState.Health.Healthy) Connected else MaterialTheme.colorScheme.onSurface,
         )
         if (status == VpnState.Status.Running) Uptime(since)
 
@@ -127,6 +132,8 @@ fun HomeScreen(modifier: Modifier, openApps: () -> Unit) {
         OutlinedButton(onClick = openApps, modifier = Modifier.fillMaxWidth()) {
             Text(if (apps.isEmpty()) "Выбрать приложения для VPN" else "Через VPN: ${apps.size} ${plural(apps.size, "приложение", "приложения", "приложений")}")
         }
+
+        DiagnosticsCard()
 
         StabilityCard()
 

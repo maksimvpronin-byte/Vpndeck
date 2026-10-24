@@ -132,3 +132,31 @@ func realityPublicKey(private string) (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), nil
 }
+
+func readManagedServer(c *Config, d *Device) (*VlessServer, error) {
+	s, err := readVlessServer(c, d.Account)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(c.XrayConfig)
+	if err != nil {
+		return nil, err
+	}
+	var xc xrayConfig
+	if err = json.Unmarshal(data, &xc); err != nil {
+		return nil, err
+	}
+	for _, in := range xc.Inbounds {
+		if in.Tag != s.Tag || in.Protocol != "vless" || in.StreamSettings.Security != "reality" {
+			continue
+		}
+		for _, cl := range in.Settings.Clients {
+			if cl.Email == "vpndeck-device-"+d.ID && cl.ID == d.UUID {
+				s.UUID = cl.ID
+				s.Flow = cl.Flow
+				return s, nil
+			}
+		}
+	}
+	return nil, errors.New("managed device credential missing from xray")
+}

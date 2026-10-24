@@ -17,6 +17,7 @@ import android.os.PowerManager
 import android.os.Process
 import android.system.OsConstants
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -47,6 +48,7 @@ import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -68,7 +70,7 @@ import io.nekohasekai.libbox.NetworkInterface as BoxNetworkInterface
 /**
  * The VPN. Android's VpnService owns the TUN device; sing-box (libbox) owns
  * everything that flows through it. Lifecycle operations run on a single
- * serial dispatcher so start/stop/reload can never interleave.
+ * serial dispatcher; startup is explicitly cancelled before shutdown.
  */
 class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
 
@@ -79,6 +81,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     private var commandServer: CommandServer? = null
     private var tunFd: ParcelFileDescriptor? = null
     private var profile: Profile? = null
+    @Volatile private var startJob: Job? = null
     private var refreshJob: Job? = null
     private var appsJob: Job? = null
     private var watchdog: TunnelWatchdog? = null
@@ -106,28 +109,34 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
         // Must happen within seconds of startForegroundService(), before any slow work.
         val stopped = VpnState.status.value == VpnState.Status.Stopped
         startInForeground(if (stopped) getString(R.string.status_starting) else runningText())
+        if ((intent?.action == ACTION_START || intent == null) && !Store.wantConnected) {
+            stopByUser()
+            return START_NOT_STICKY
+        }
+        registerReceiverOnce()
         if (stopped) {
             VpnState.set(VpnState.Status.Starting)
             Store.wantConnected = true
-            scope.launch { start() }
+            startJob = scope.launch { start() }
         }
         return START_STICKY
     }
 
     override fun onRevoke() {
         // Another VPN app took over, or the user revoked us in system settings.
-        Store.wantConnected = false
-        scope.launch { stop() }
+        stopByUser()
     }
 
     override fun onDestroy() {
-        runBlocking(serial) { if (commandServer != null) stop() }
+        startJob?.cancel()
+        runBlocking(serial) { stop() }
         scope.cancel()
         super.onDestroy()
     }
 
     private fun stopByUser() {
         Store.wantConnected = false
+        startJob?.cancel()
         scope.launch { stop() }
     }
 
@@ -139,32 +148,36 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
             // Fresh parameters first, so server-side changes (port, camouflage, keys) apply on
             // the next connect instead of after the 6-hour refresh. A short timeout keeps a
             // slow or unreachable auth server from delaying the VPN; then the cache is used.
-            val current = refreshProfileNow(START_FETCH_TIMEOUT_MS) ?: Store.profile ?: error(getString(R.string.err_no_profile))
-            profile = current
-
-            registerReceiverOnce()
-            NetworkMonitor.start()
-            Libbox.promoteOOMDraft()
-            val server = CommandServer(this, this)
-            server.start()
-            commandServer = server
-            server.startOrReloadService(buildConfig(current), OverrideOptions())
-
-            VpnState.set(VpnState.Status.Running)
-            startInForeground(runningText())
+            startWhenWanted(
+                fetch = { refreshProfileNow(START_FETCH_TIMEOUT_MS, allowCache = true) ?: error(getString(R.string.err_no_profile)) },
+                wanted = { Store.wantConnected && Store.session.value != null },
+            ) { current ->
+                profile = current
+                NetworkMonitor.start()
+                Libbox.promoteOOMDraft()
+                val server = CommandServer(this, this)
+                server.start()
+                commandServer = server
+                server.startOrReloadService(buildConfig(current), OverrideOptions())
+                VpnState.set(VpnState.Status.Running)
+                startInForeground(runningText())
+            }
             scheduleRefresh()
             watchAppSelection()
             startWatchdog()
             scheduleUpdateCheck()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(VpnDeckApp.TAG, "start failed", e)
-            VpnState.fail(e.message ?: e.toString())
+            if (VpnState.error.value == null) VpnState.fail(e.message ?: e.toString())
             Store.wantConnected = false
             stop()
         }
     }
 
     private suspend fun reload(reason: String) {
+        if (!Store.wantConnected || Store.session.value == null) return
         val server = commandServer ?: return
         val current = profile ?: return
         try {
@@ -185,6 +198,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
             return
         }
         VpnState.set(VpnState.Status.Stopping)
+        startJob?.cancel()
         refreshJob?.cancel()
         appsJob?.cancel()
         watchdog?.stop()
@@ -233,17 +247,24 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     }
 
     /** Fetches the profile directly (our own traffic never goes through the tunnel). */
-    private suspend fun refreshProfileNow(timeoutMs: Int = 15_000): Profile? {
+    private suspend fun refreshProfileNow(timeoutMs: Int = 15_000, allowCache: Boolean = false): Profile? {
         val session = Store.session.value ?: return null
-        return try {
-            ApiClient.fetchProfile(session, timeoutMs).also { Store.saveProfile(it) }
-        } catch (e: ApiClient.ApiException.Unauthorized) {
-            VpnState.fail(e.message!!)
-            null
-        } catch (e: Exception) {
-            Log.w(VpnDeckApp.TAG, "profile refresh failed: ${e.message}")
-            null
-        }
+        return refreshOrCached(
+            fetch = { ApiClient.fetchSession(session, timeoutMs) },
+            cached = { if (allowCache) Store.profile?.let { ApiClient.LoginResult(session.token, it) } else null },
+            save = {
+                if (!Store.saveSessionIfCurrent(session, it.token, it.profile)) throw CancellationException("Session changed")
+                VpnState.apiResult.value = "Доступен"
+            },
+            isCurrent = { Store.session.value == session },
+            rejected = { error ->
+                if (error is ApiClient.ApiException.Unauthorized) Store.logout()
+                VpnState.apiResult.value = if (error is ApiClient.ApiException.Unauthorized) "Нужен повторный вход" else "Ключ сервера изменился"
+                VpnState.fail(error.message ?: "Ошибка проверки сервера")
+                stopByUser()
+            },
+            unavailable = { VpnState.apiResult.value = "Временно недоступен" },
+        )?.profile
     }
 
     private fun scheduleRefresh() {
@@ -314,14 +335,16 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
                 fresh != null
             },
             onHealthChanged = { healthy ->
+                VpnState.setHealth(if (healthy) VpnState.Health.Healthy else VpnState.Health.Recovering)
                 if (VpnState.status.value == VpnState.Status.Running) {
                     startInForeground(if (healthy) runningText() else getString(R.string.status_reconnecting))
                 }
             },
         )
         NetworkMonitor.onNetworkChanged = { dog.kick() }
-        dog.start()
         watchdog = dog
+        dog.start()
+        dog.kick()
     }
 
     @OptIn(kotlinx.coroutines.FlowPreview::class)
@@ -357,6 +380,11 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     // ---- notification ----
 
     private fun runningText(): String {
+        when (VpnState.health.value) {
+            VpnState.Health.Checking -> return "Проверяем соединение…"
+            VpnState.Health.Recovering -> return getString(R.string.status_reconnecting)
+            else -> Unit
+        }
         val n = Store.selectedApps.value.size
         return resources.getQuantityString(R.plurals.status_running_apps, n, n)
     }
@@ -594,6 +622,7 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
         while (hasNext()) block(next())
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun RoutePrefix.toIpPrefix() = IpPrefix(InetAddress.getByName(address()), prefix())
 
     companion object {
@@ -601,14 +630,17 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
         private const val UPDATE_NOTIFICATION_ID = 2
         const val LOG_FILE = "box.log"
         private const val START_FETCH_TIMEOUT_MS = 5_000
+        private const val ACTION_START = "com.vpndeck.START"
         const val ACTION_STOP = "com.vpndeck.STOP"
 
         fun start(context: Context) {
+            Store.wantConnected = true
             VpnState.clearError()
-            ContextCompat.startForegroundService(context, Intent(context, VpnDeckService::class.java))
+            ContextCompat.startForegroundService(context, Intent(context, VpnDeckService::class.java).setAction(ACTION_START))
         }
 
         fun stop(context: Context) {
+            Store.wantConnected = false
             context.sendBroadcast(Intent(ACTION_STOP).setPackage(context.packageName))
             // If the service is not running yet, there is nobody to receive the
             // broadcast; make sure the user's intent is still recorded.

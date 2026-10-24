@@ -37,6 +37,8 @@ func main() {
 	switch args[0] {
 	case "init":
 		err = cmdInit(*configPath, args[1:])
+	case "devices":
+		err = cmdDevices(*configPath, args[1:])
 	case "passwd":
 		err = cmdPasswd(*configPath, args[1:])
 	case "fingerprint":
@@ -99,10 +101,6 @@ func cmdPasswd(path string, args []string) error {
 	if len(args) != 1 || args[0] == "" {
 		return errors.New("usage: passwd <user>  (password on stdin)")
 	}
-	c, err := loadConfig(path)
-	if err != nil {
-		return err
-	}
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return errors.New("no password on stdin")
@@ -115,15 +113,19 @@ func cmdPasswd(path string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if u := c.user(args[0]); u != nil {
-		u.PasswordHash = hash
-		u.Disabled = false
-	} else {
-		c.Users = append(c.Users, User{Name: args[0], PasswordHash: hash})
-	}
-	if err := saveConfig(path, c); err != nil {
+	err = withConfigLock(path, func(current *Config) error {
+		if u := current.user(args[0]); u != nil {
+			u.PasswordHash = hash
+			u.Disabled = false
+		} else {
+			current.Users = append(current.Users, User{Name: args[0], PasswordHash: hash})
+		}
+		return saveConfig(path, current)
+	})
+	if err != nil {
 		return err
 	}
+
 	fmt.Printf("password set for %q; existing sessions of this user are now logged out\n", args[0])
 	return nil
 }
@@ -171,6 +173,7 @@ func cmdServe(path string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/login", h.login)
 	mux.HandleFunc("GET /api/v1/profile", h.profile)
+	mux.HandleFunc("POST /api/v1/device", h.registerDevice)
 	srv := &http.Server{
 		Addr:              c.Listen,
 		Handler:           mux,
@@ -209,10 +212,16 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+		DeviceID   string `json:"device_id"`
+		DeviceName string `json:"device_name"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if req.DeviceID != "" && (!validDeviceID(req.DeviceID) || len(req.DeviceName) > 160) {
 		writeError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
@@ -235,17 +244,36 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.limiter.success(ip)
-	p, err := buildProfile(c, u)
+
+	var result any
+	err = withConfigLock(h.configPath, func(current *Config) error {
+		currentUser := current.user(u.Name)
+		if currentUser == nil || currentUser.Disabled || currentUser.PasswordHash != u.PasswordHash {
+			return errDeviceRejected
+		}
+		var d *Device
+		if current.ManageDevices && req.DeviceID != "" {
+			var e error
+			d, e = ensureDevice(h.configPath, current, u.Name, req.DeviceID, req.DeviceName, "")
+			if e != nil {
+				return e
+			}
+		}
+		var e error
+		result, e = loginResponse(current, currentUser, d, now)
+		return e
+	})
 	if err != nil {
-		log.Printf("build profile: %v", err)
-		writeError(w, http.StatusInternalServerError, "server_error")
+		if errors.Is(err, errDeviceRejected) {
+			writeError(w, http.StatusUnauthorized, "invalid_credentials")
+			return
+		}
+		log.Printf("login profile failed: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "server_error")
 		return
 	}
 	log.Printf("login ok: user=%q ip=%s", u.Name, ip)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"token":   issueToken(c.TokenSecret, u, now),
-		"profile": p,
-	})
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *handler) profile(w http.ResponseWriter, r *http.Request) {
@@ -260,12 +288,12 @@ func (h *handler) profile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
-	u, err := verifyToken(c, token)
+	u, device, err := authenticateToken(c, token)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	p, err := buildProfile(c, u)
+	p, err := buildDeviceProfile(c, u, device)
 	if err != nil {
 		log.Printf("build profile: %v", err)
 		writeError(w, http.StatusInternalServerError, "server_error")
@@ -310,3 +338,82 @@ var dummyHash = sync.OnceValue(func() string {
 	}
 	return h
 })
+
+func loginResponse(c *Config, u *User, d *Device, now time.Time) (any, error) {
+	p, err := buildDeviceProfile(c, u, d)
+	if err != nil {
+		return nil, err
+	}
+	token := issueToken(c.TokenSecret, u, now)
+	if d != nil {
+		token = issueDeviceToken(c, u, d, now)
+	}
+	return map[string]any{"token": token, "profile": p}, nil
+}
+
+func buildDeviceProfile(c *Config, u *User, d *Device) (*profile, error) {
+	p, err := buildProfile(c, u)
+	if err != nil {
+		return nil, err
+	}
+	if d != nil {
+		// Strict lookup prevents a removed credential falling back to the shared one.
+		matched, err := readManagedServer(c, d)
+		if err != nil {
+			return nil, err
+		}
+		p.Servers = []VlessServer{*matched}
+	}
+	return p, nil
+}
+
+func (h *handler) registerDevice(w http.ResponseWriter, r *http.Request) {
+	token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !found {
+		writeError(w, 401, "unauthorized")
+		return
+	}
+	var req struct {
+		ID   string `json:"device_id"`
+		Name string `json:"device_name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || !validDeviceID(req.ID) || len(req.Name) > 160 {
+		writeError(w, 400, "bad_request")
+		return
+	}
+	var result any
+	status := http.StatusServiceUnavailable
+	err := withConfigLock(h.configPath, func(c *Config) error {
+		if !c.ManageDevices {
+			status = 404
+			return errors.New("devices disabled")
+		}
+		u, existing, err := authenticateToken(c, token)
+		if err != nil {
+			status = 401
+			return err
+		}
+		if existing != nil && existing.ID != req.ID {
+			status = 401
+			return errDeviceRejected
+		}
+		legacy := ""
+		if strings.HasPrefix(token, "v1.") {
+			legacy = token
+		}
+		d, err := ensureDevice(h.configPath, c, u.Name, req.ID, req.Name, legacy)
+		if err != nil {
+			if errors.Is(err, errDeviceRejected) {
+				status = 401
+			}
+			return err
+		}
+		result, err = loginResponse(c, u, d, time.Now())
+		return err
+	})
+	if err != nil {
+		writeError(w, status, "device_registration_failed")
+		return
+	}
+	writeJSON(w, 200, result)
+}

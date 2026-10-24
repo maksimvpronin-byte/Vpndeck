@@ -93,6 +93,9 @@ kotlin {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+
     implementation(files("libs/libbox.aar"))
 
     implementation("androidx.core:core-ktx:1.19.0")

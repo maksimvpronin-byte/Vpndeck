@@ -58,7 +58,8 @@ object ApiClient {
 
     suspend fun login(host: String, port: Int, pin: String, username: String, password: String): LoginResult =
         withContext(Dispatchers.IO) {
-            val body = JSONObject().put("username", username).put("password", password).toString()
+            val body = JSONObject().put("username", username).put("password", password)
+                .put("device_id", Store.deviceId).put("device_name", Store.deviceName).toString()
             val (code, text) = request(host, port, pin, "POST", "/api/v1/login", body, token = null)
             when (code) {
                 200 -> {
@@ -75,6 +76,21 @@ object ApiClient {
         val (code, text) = request(session.host, session.port, session.spkiPin, "GET", "/api/v1/profile", null, session.token, timeoutMs)
         when (code) {
             200 -> Profile.parse(text)
+            401 -> throw ApiException.Unauthorized()
+            else -> throw ApiException.Server(code)
+        }
+    }
+
+    /** Upgrades an existing login without asking the family to enter passwords again.
+     * Old servers return 404 and keep using the established profile contract.
+     */
+    suspend fun fetchSession(session: Store.Session, timeoutMs: Int): LoginResult = withContext(Dispatchers.IO) {
+        if (session.token.startsWith("v2.")) return@withContext LoginResult(session.token, fetchProfile(session, timeoutMs))
+        val body = JSONObject().put("device_id", Store.deviceId).put("device_name", Store.deviceName).toString()
+        val (code, text) = request(session.host, session.port, session.spkiPin, "POST", "/api/v1/device", body, session.token, timeoutMs)
+        when (code) {
+            200 -> JSONObject(text).let { LoginResult(it.getString("token"), Profile.parse(it.getJSONObject("profile").toString())) }
+            404 -> LoginResult(session.token, fetchProfile(session, timeoutMs))
             401 -> throw ApiException.Unauthorized()
             else -> throw ApiException.Server(code)
         }
@@ -102,6 +118,7 @@ object ApiClient {
             conn.readTimeout = timeoutMs
             conn.requestMethod = method
             conn.useCaches = false
+            conn.instanceFollowRedirects = false
             conn.setRequestProperty("Accept", "application/json")
             token?.let { conn.setRequestProperty("Authorization", "Bearer $it") }
             if (body != null) {
