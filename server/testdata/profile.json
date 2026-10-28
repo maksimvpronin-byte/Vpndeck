@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "account": "family",
+  "servers": [
+    {
+      "tag": "vless-reality-443",
+      "host": "203.0.113.7",
+      "port": 443,
+      "uuid": "11111111-2222-3333-4444-555555555555",
+      "flow": "xtls-rprx-vision",
+      "server_name": "www.example.com",
+      "public_key": "Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx5",
+      "short_id": "abcd",
+      "fingerprint": "chrome"
+    }
+  ],
+  "refresh_interval": 21600
+}

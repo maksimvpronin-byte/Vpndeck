@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +124,53 @@ func TestLegacyTokenMaxAge(t *testing.T) {
 	}
 	if doProfile(h, fresh).Code != 200 {
 		t.Fatal("fresh token rejected")
+	}
+}
+
+// jsonShape reduces a decoded JSON value to its keys and value types.
+func jsonShape(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		m := map[string]any{}
+		for k, e := range x {
+			m[k] = jsonShape(e)
+		}
+		return m
+	case []any:
+		if len(x) == 0 {
+			return []any{}
+		}
+		return []any{jsonShape(x[0])}
+	case float64:
+		return "number"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	}
+	return "null"
+}
+
+// The Android app's tests parse the same file (ProfileContractTest), so a field
+// renamed on one side only fails one of the two test suites.
+func TestProfileMatchesContract(t *testing.T) {
+	data, err := os.ReadFile("testdata/profile.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want any
+	if err := json.Unmarshal(data, &want); err != nil {
+		t.Fatal(err)
+	}
+	h, _, _ := setup(t)
+	rec := doLogin(h, "family", "correct horse")
+	var resp struct {
+		Profile any `json:"profile"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := jsonShape(resp.Profile), jsonShape(want); !reflect.DeepEqual(got, want) {
+		t.Fatalf("profile shape changed:\n got  %v\n want %v\nupdate server/testdata/profile.json and the app's Profile.kt together", got, want)
 	}
 }
