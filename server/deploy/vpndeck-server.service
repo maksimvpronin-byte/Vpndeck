@@ -1,3 +1,6 @@
+# deploy.sh replaces this file on every run. Local changes (e.g. ReadWritePaths
+# for an Xray config elsewhere) go into a drop-in: systemctl edit vpndeck-server
+
 [Unit]
 Description=VpnDeck auth/config API
 After=network-online.target docker.service
@@ -20,7 +23,8 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-MemoryMax=64M
+# Headroom for the `docker restart` child that device management runs.
+MemoryMax=128M
 
 [Install]
 WantedBy=multi-user.target

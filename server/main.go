@@ -4,7 +4,9 @@
 //	vpndeck-server [-config /etc/vpndeck/server.json] init -host <public ip> -xray <xray config>
 //	vpndeck-server [-config ...] passwd <user>        (password read from stdin)
 //	vpndeck-server [-config ...] fingerprint
-//	vpndeck-server [-config ...] serve
+//	vpndeck-server [-config ...] check
+//	vpndeck-server [-config ...] devices [enable <xray container> | revoke <id> | restore <id>]
+//	vpndeck-server [-config ...] serve                (the default)
 package main
 
 import (
@@ -48,7 +50,7 @@ func main() {
 	case "serve":
 		err = cmdServe(*configPath)
 	default:
-		err = fmt.Errorf("unknown command %q", args[0])
+		err = fmt.Errorf("unknown command %q (commands: init, passwd, fingerprint, check, devices, serve)", args[0])
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

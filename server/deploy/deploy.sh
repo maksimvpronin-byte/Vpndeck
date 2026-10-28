@@ -3,7 +3,9 @@
 #
 #   server/deploy/deploy.sh root@<server-ip>
 #
-# First run also needs the one-time setup printed at the end.
+# First run also needs the one-time setup printed at the end. The systemd unit
+# is replaced every time; keep local changes in a drop-in
+# (systemctl edit vpndeck-server), it survives deploys.
 set -euo pipefail
 
 TARGET=${1:?usage: deploy.sh user@host}
@@ -18,7 +20,8 @@ case "$ARCH" in
   *) echo "unsupported arch $ARCH" >&2; exit 1 ;;
 esac
 
-(cd "$HERE/.." && CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -ldflags="-s -w" -o "$OUT/vpndeck-server" .)
+# go.mod sets the minimum Go; an older local Go fetches it (GOTOOLCHAIN=auto).
+(cd "$HERE/.." && echo "building with $(go version)" && CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -ldflags="-s -w" -o "$OUT/vpndeck-server" .)
 
 scp -q "$OUT/vpndeck-server" "$TARGET:/usr/local/bin/vpndeck-server.new"
 scp -q "$HERE/vpndeck-server.service" "$TARGET:/etc/systemd/system/vpndeck-server.service"
