@@ -159,6 +159,7 @@ fun HomeScreen(modifier: Modifier, openApps: () -> Unit) {
                 TextButton(onClick = {
                     confirmLogout = false
                     VpnDeckService.stop(ctx)
+                    VpnState.clearError()
                     Store.logout()
                 }) { Text("Выйти") }
             },

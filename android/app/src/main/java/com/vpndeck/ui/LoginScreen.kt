@@ -26,6 +26,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +42,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.vpndeck.data.ApiClient
 import com.vpndeck.data.Store
+import com.vpndeck.vpn.VpnState
 import kotlinx.coroutines.launch
 
 @Composable
@@ -51,6 +53,8 @@ fun LoginScreen() {
     var password by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Why the previous session ended (device revoked, password changed) until the next attempt.
+    val sessionError by VpnState.error.collectAsState()
     // Pending trust decision: (host, port, fingerprint)
     var askTrust by remember { mutableStateOf<Triple<String, Int, String>?>(null) }
     var pinMismatch by remember { mutableStateOf(false) }
@@ -76,6 +80,7 @@ fun LoginScreen() {
     }
 
     fun submit(forgetPin: Boolean = false) {
+        VpnState.clearError()
         val (host, port) = ApiClient.parseAddress(address) ?: run {
             error = "Укажите адрес сервера"
             return
@@ -138,7 +143,7 @@ fun LoginScreen() {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { if (!busy) submit() }),
             )
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            (error ?: sessionError)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(onClick = { submit() }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                 if (busy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) else Text("Войти")
             }

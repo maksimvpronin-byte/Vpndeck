@@ -27,10 +27,24 @@ object Store {
 
     val deviceName: String get() = "${Build.MANUFACTURER} ${Build.MODEL}".take(80)
 
+    /** Random ID of this installation; never sent as a credential. */
     val deviceId: String
-        @Synchronized get() = prefs.getString("device_id", null) ?: UUID.randomUUID().toString().also { id ->
-            prefs.edit(commit = true) { putString("device_id", id) }
+        @Synchronized get() = prefs.getString(K_DEVICE_ID, null) ?: UUID.randomUUID().toString().also { id ->
+            prefs.edit(commit = true) { putString(K_DEVICE_ID, id) }
         }
+
+    /**
+     * The ID this phone uses with [account]: normally [deviceId]. The server ties a device
+     * to one account, so signing in to another account on the same phone gets its own ID
+     * ([newDeviceIdFor]) — and switching back reuses the old one.
+     */
+    @Synchronized
+    fun deviceIdFor(account: String): String = prefs.getString(K_DEVICE_ID + ":" + account, null) ?: deviceId
+
+    @Synchronized
+    fun newDeviceIdFor(account: String): String = UUID.randomUUID().toString().also { id ->
+        prefs.edit(commit = true) { putString(K_DEVICE_ID + ":" + account, id) }
+    }
 
     // --- Session: where the server is, how we trust it, and who we are ---
 
@@ -133,6 +147,7 @@ object Store {
         get() = prefs.getString(K_UPDATE_NOTIFIED, null)
         set(value) = prefs.edit { putString(K_UPDATE_NOTIFIED, value) }
 
+    private const val K_DEVICE_ID = "device_id"
     private const val K_HOST = "host"
     private const val K_PORT = "port"
     private const val K_PIN = "spki_pin"

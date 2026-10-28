@@ -59,6 +59,8 @@ fun DiagnosticsCard() {
                                 "Доступен"
                             } catch (e: CancellationException) {
                                 throw e
+                            } catch (_: ApiClient.ApiException.DeviceRevoked) {
+                                "Устройство отключено"
                             } catch (_: ApiClient.ApiException.Unauthorized) {
                                 "Нужен повторный вход"
                             } catch (_: ApiClient.ApiException.PinMismatch) {
@@ -78,7 +80,7 @@ fun DiagnosticsCard() {
                                 appendLine("VpnDeck ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
                                 appendLine("Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT}")
                                 appendLine("Устройство: ${Store.deviceName}")
-                                appendLine("ID устройства: ${Store.deviceId}")
+                                appendLine("ID устройства: ${session?.let { Store.deviceIdFor(it.account) } ?: Store.deviceId}")
                                 appendLine("API: $apiStatus")
                                 appendLine("Туннель: $tunnel")
                                 appendLine("Выбрано приложений: ${Store.selectedApps.value.size}")

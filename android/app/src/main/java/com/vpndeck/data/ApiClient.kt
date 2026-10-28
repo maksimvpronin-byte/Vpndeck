@@ -29,7 +29,9 @@ object ApiClient {
     sealed class ApiException(message: String) : IOException(message) {
         class InvalidCredentials : ApiException("Неверный логин или пароль")
         class TooManyAttempts : ApiException("Слишком много попыток. Подождите 15 минут")
-        class Unauthorized : ApiException("Сессия недействительна, войдите заново")
+        open class Unauthorized(message: String = "Сессия недействительна, войдите заново") : ApiException(message)
+        /** The admin revoked this phone (`vpndeck-server devices revoke`); a new login won't help. */
+        class DeviceRevoked : Unauthorized("Это устройство отключено на сервере. Обратитесь к администратору")
         class PinMismatch : ApiException("Ключ сервера изменился! Возможен перехват соединения")
         class Server(code: Int) : ApiException("Ошибка сервера ($code)")
     }
@@ -58,15 +60,22 @@ object ApiClient {
 
     suspend fun login(host: String, port: Int, pin: String, username: String, password: String): LoginResult =
         withContext(Dispatchers.IO) {
-            val body = JSONObject().put("username", username).put("password", password)
-                .put("device_id", Store.deviceId).put("device_name", Store.deviceName).toString()
-            val (code, text) = request(host, port, pin, "POST", "/api/v1/login", body, token = null)
+            fun post(): Pair<Int, String> {
+                val body = JSONObject().put("username", username).put("password", password)
+                    .put("device_id", Store.deviceIdFor(username)).put("device_name", Store.deviceName).toString()
+                return request(host, port, pin, "POST", "/api/v1/login", body, token = null)
+            }
+            var (code, text) = post()
+            if (code == 401 && errorCode(text) == DEVICE_OTHER_ACCOUNT) {
+                // The server knows this phone under another account; join this one as another device.
+                Store.newDeviceIdFor(username)
+                val retry = post()
+                code = retry.first
+                text = retry.second
+            }
             when (code) {
-                200 -> {
-                    val o = JSONObject(text)
-                    LoginResult(o.getString("token"), Profile.parse(o.getJSONObject("profile").toString()))
-                }
-                401 -> throw ApiException.InvalidCredentials()
+                200 -> parseLogin(text)
+                401 -> throw if (errorCode(text) == DEVICE_REVOKED) ApiException.DeviceRevoked() else ApiException.InvalidCredentials()
                 429 -> throw ApiException.TooManyAttempts()
                 else -> throw ApiException.Server(code)
             }
@@ -76,7 +85,7 @@ object ApiClient {
         val (code, text) = request(session.host, session.port, session.spkiPin, "GET", "/api/v1/profile", null, session.token, timeoutMs)
         when (code) {
             200 -> Profile.parse(text)
-            401 -> throw ApiException.Unauthorized()
+            401 -> throw unauthorized(text)
             else -> throw ApiException.Server(code)
         }
     }
@@ -86,15 +95,38 @@ object ApiClient {
      */
     suspend fun fetchSession(session: Store.Session, timeoutMs: Int): LoginResult = withContext(Dispatchers.IO) {
         if (session.token.startsWith("v2.")) return@withContext LoginResult(session.token, fetchProfile(session, timeoutMs))
-        val body = JSONObject().put("device_id", Store.deviceId).put("device_name", Store.deviceName).toString()
-        val (code, text) = request(session.host, session.port, session.spkiPin, "POST", "/api/v1/device", body, session.token, timeoutMs)
+        fun post(): Pair<Int, String> {
+            val body = JSONObject().put("device_id", Store.deviceIdFor(session.account)).put("device_name", Store.deviceName).toString()
+            return request(session.host, session.port, session.spkiPin, "POST", "/api/v1/device", body, session.token, timeoutMs)
+        }
+        var (code, text) = post()
+        if (code == 401 && errorCode(text) == DEVICE_OTHER_ACCOUNT) {
+            Store.newDeviceIdFor(session.account)
+            val retry = post()
+            code = retry.first
+            text = retry.second
+        }
         when (code) {
-            200 -> JSONObject(text).let { LoginResult(it.getString("token"), Profile.parse(it.getJSONObject("profile").toString())) }
+            200 -> parseLogin(text)
             404 -> LoginResult(session.token, fetchProfile(session, timeoutMs))
-            401 -> throw ApiException.Unauthorized()
+            401 -> throw unauthorized(text)
             else -> throw ApiException.Server(code)
         }
     }
+
+    private fun parseLogin(text: String): LoginResult {
+        val o = JSONObject(text)
+        return LoginResult(o.getString("token"), Profile.parse(o.getJSONObject("profile").toString()))
+    }
+
+    private fun unauthorized(text: String): ApiException =
+        if (errorCode(text) == DEVICE_REVOKED) ApiException.DeviceRevoked() else ApiException.Unauthorized()
+
+    /** The server's reason for a refusal ("device_revoked", …); empty if it gave none. */
+    internal fun errorCode(text: String): String = runCatching { JSONObject(text).optString("error") }.getOrDefault("")
+
+    private const val DEVICE_REVOKED = "device_revoked"
+    private const val DEVICE_OTHER_ACCOUNT = "device_other_account"
 
     private fun request(
         host: String,

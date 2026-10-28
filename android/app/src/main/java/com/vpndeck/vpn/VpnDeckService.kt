@@ -281,9 +281,14 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
             },
             isCurrent = { Store.session.value == session },
             rejected = { error ->
-                if (error is ApiClient.ApiException.Unauthorized) Store.logout()
-                VpnState.apiResult.value = if (error is ApiClient.ApiException.Unauthorized) "Нужен повторный вход" else "Ключ сервера изменился"
+                VpnState.apiResult.value = when (error) {
+                    is ApiClient.ApiException.DeviceRevoked -> "Устройство отключено"
+                    is ApiClient.ApiException.Unauthorized -> "Нужен повторный вход"
+                    else -> "Ключ сервера изменился"
+                }
+                // Set before logging out: the login screen shows why the session ended.
                 VpnState.fail(error.message ?: "Ошибка проверки сервера")
+                if (error is ApiClient.ApiException.Unauthorized) Store.logout()
                 stopByUser()
             },
             unavailable = { VpnState.apiResult.value = "Временно недоступен" },

@@ -49,6 +49,16 @@ class ConnectionPolicyTest {
         assertTrue(rejected)
     }
 
+    @Test fun revokedDeviceIsARejection() = runTest {
+        var reason: Exception? = null
+        assertNull(refreshOrCached<String>(
+            fetch = { throw ApiClient.ApiException.DeviceRevoked() },
+            cached = { fail("Revoked device must not use cached profile"); "cached" },
+            save = { false }, isCurrent = { true }, rejected = { reason = it }, unavailable = {},
+        ))
+        assertTrue(reason is ApiClient.ApiException.DeviceRevoked)
+    }
+
     @Test fun changedKeyNeverUsesCache() = runTest {
         var rejected = false
         assertNull(refreshOrCached<String>(
