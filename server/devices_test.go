@@ -199,3 +199,75 @@ func TestDeviceLoginAndTamperedToken(t *testing.T) {
 		t.Fatal("password login silently reactivated revoked device")
 	}
 }
+
+// editXrayClients rewrites the clients of the VLESS inbound the way an admin would by hand.
+func editXrayClients(t *testing.T, path string, edit func([]any) []any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range root["inbounds"].([]any) {
+		in := raw.(map[string]any)
+		if in["protocol"] == "vless" {
+			settings := in["settings"].(map[string]any)
+			settings["clients"] = edit(settings["clients"].([]any))
+		}
+	}
+	out, _ := json.Marshal(root)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func profileUUID(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	if rec.Code != 200 {
+		t.Fatalf("profile: %d %s", rec.Code, rec.Body)
+	}
+	var p profile
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	return p.Servers[0].UUID
+}
+
+func TestSharedCredentialIsNeverADeviceOne(t *testing.T) {
+	const shared = "11111111-2222-3333-4444-555555555555"
+	h, path, c := managedSetup(t)
+	deviceToken := responseToken(t, register(h, issueToken(c.TokenSecret, &c.Users[0], time.Now()), testDeviceA))
+	oldApp := issueToken(c.TokenSecret, &c.Users[0], time.Now().Add(-time.Minute))
+	c, _ = loadConfig(path)
+	deviceUUID := c.Devices[0].UUID
+
+	// The device credential ends up first in the list.
+	editXrayClients(t, c.XrayConfig, func(clients []any) []any {
+		return append(clients[1:], clients[0])
+	})
+	if got := profileUUID(t, doProfile(h, oldApp)); got != shared {
+		t.Fatalf("old app got %s, want the shared credential", got)
+	}
+
+	// The shared credential is removed altogether: old apps get nothing, not a phone's UUID.
+	editXrayClients(t, c.XrayConfig, func(clients []any) []any {
+		var kept []any
+		for _, cl := range clients {
+			if cl.(map[string]any)["id"] != shared {
+				kept = append(kept, cl)
+			}
+		}
+		return kept
+	})
+	if rec := doProfile(h, oldApp); rec.Code == 200 {
+		t.Fatalf("old app got a device credential: %s", rec.Body)
+	}
+	if got := profileUUID(t, doProfile(h, deviceToken)); got != deviceUUID {
+		t.Fatalf("device got %s, want its own %s", got, deviceUUID)
+	}
+	// New devices still register: the flow comes from the remaining clients.
+	responseToken(t, register(h, issueToken(c.TokenSecret, &c.Users[0], time.Now().Add(-2*time.Minute)), testDeviceB))
+}

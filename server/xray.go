@@ -24,17 +24,24 @@ type VlessServer struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+// deviceEmailPrefix marks the Xray clients vpndeck-server manages itself, one per device.
+const deviceEmailPrefix = "vpndeck-device-"
+
+func deviceEmail(id string) string { return deviceEmailPrefix + id }
+
+type xrayClient struct {
+	ID    string `json:"id"`
+	Flow  string `json:"flow"`
+	Email string `json:"email"`
+}
+
 type xrayConfig struct {
 	Inbounds []struct {
 		Tag      string `json:"tag"`
 		Port     any    `json:"port"`
 		Protocol string `json:"protocol"`
 		Settings struct {
-			Clients []struct {
-				ID    string `json:"id"`
-				Flow  string `json:"flow"`
-				Email string `json:"email"`
-			} `json:"clients"`
+			Clients []xrayClient `json:"clients"`
 		} `json:"settings"`
 		StreamSettings struct {
 			Security        string `json:"security"`
@@ -47,10 +54,17 @@ type xrayConfig struct {
 	} `json:"inbounds"`
 }
 
-// readVlessServer derives the client-side parameters straight from the live
+// xrayInbound is the VLESS+Reality inbound handed out to clients: the shared
+// connection parameters plus the credentials it accepts.
+type xrayInbound struct {
+	server  VlessServer // UUID and Flow are per credential, see with()
+	clients []xrayClient
+}
+
+// readInbound derives the client-side parameters straight from the live
 // Xray config, so the Xray file stays the single source of truth: rotate keys
 // there, restart Xray, and every phone picks the change up on its next refresh.
-func readVlessServer(c *Config, userName string) (*VlessServer, error) {
+func readInbound(c *Config) (*xrayInbound, error) {
 	data, err := os.ReadFile(c.XrayConfig)
 	if err != nil {
 		return nil, err
@@ -78,32 +92,76 @@ func readVlessServer(c *Config, userName string) (*VlessServer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("inbound %q: %w", in.Tag, err)
 		}
-		// Prefer an Xray client whose email matches the account name; this
-		// lets each account get its own UUID later without a format change.
-		client := in.Settings.Clients[0]
-		for _, cl := range in.Settings.Clients {
-			if cl.Email != "" && strings.EqualFold(cl.Email, userName) {
-				client = cl
-				break
-			}
-		}
 		shortID := ""
 		if len(rs.ShortIds) > 0 {
 			shortID = rs.ShortIds[0]
 		}
-		return &VlessServer{
-			Tag:         in.Tag,
-			Host:        c.PublicHost,
-			Port:        port,
-			UUID:        client.ID,
-			Flow:        client.Flow,
-			ServerName:  rs.ServerNames[0],
-			PublicKey:   pub,
-			ShortID:     shortID,
-			Fingerprint: c.Fingerprint,
+		return &xrayInbound{
+			server: VlessServer{
+				Tag:         in.Tag,
+				Host:        c.PublicHost,
+				Port:        port,
+				ServerName:  rs.ServerNames[0],
+				PublicKey:   pub,
+				ShortID:     shortID,
+				Fingerprint: c.Fingerprint,
+			},
+			clients: in.Settings.Clients,
 		}, nil
 	}
 	return nil, errors.New("no matching VLESS+Reality inbound in xray config")
+}
+
+// sharedClient is the credential for sessions without a device of their own:
+// the Xray client whose email matches the account, otherwise the first one
+// vpndeck-server does not manage. A device credential is never shared, wherever
+// it sits in the list — otherwise removing the shared client would hand one
+// phone's UUID to every old app.
+func (in *xrayInbound) sharedClient(account string) (xrayClient, bool) {
+	var first *xrayClient
+	for i := range in.clients {
+		cl := &in.clients[i]
+		if strings.HasPrefix(cl.Email, deviceEmailPrefix) {
+			continue
+		}
+		if cl.Email != "" && strings.EqualFold(cl.Email, account) {
+			return *cl, true
+		}
+		if first == nil {
+			first = cl
+		}
+	}
+	if first == nil {
+		return xrayClient{}, false
+	}
+	return *first, true
+}
+
+// flow is what a new device credential gets: the same as the existing clients.
+func (in *xrayInbound) flow() string {
+	if cl, ok := in.sharedClient(""); ok {
+		return cl.Flow
+	}
+	return in.clients[0].Flow
+}
+
+func (in *xrayInbound) with(cl xrayClient) *VlessServer {
+	s := in.server
+	s.UUID, s.Flow = cl.ID, cl.Flow
+	return &s
+}
+
+// readVlessServer returns the shared credential for sessions without a device.
+func readVlessServer(c *Config, account string) (*VlessServer, error) {
+	in, err := readInbound(c)
+	if err != nil {
+		return nil, err
+	}
+	cl, ok := in.sharedClient(account)
+	if !ok {
+		return nil, fmt.Errorf("inbound %q has only per-device clients, nothing to give a session without a device", in.server.Tag)
+	}
+	return in.with(cl), nil
 }
 
 func parsePort(v any) (int, error) {
@@ -133,29 +191,16 @@ func realityPublicKey(private string) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()), nil
 }
 
+// readManagedServer is strict: a device whose credential was removed from Xray
+// gets an error, never the shared fallback.
 func readManagedServer(c *Config, d *Device) (*VlessServer, error) {
-	s, err := readVlessServer(c, d.Account)
+	in, err := readInbound(c)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(c.XrayConfig)
-	if err != nil {
-		return nil, err
-	}
-	var xc xrayConfig
-	if err = json.Unmarshal(data, &xc); err != nil {
-		return nil, err
-	}
-	for _, in := range xc.Inbounds {
-		if in.Tag != s.Tag || in.Protocol != "vless" || in.StreamSettings.Security != "reality" {
-			continue
-		}
-		for _, cl := range in.Settings.Clients {
-			if cl.Email == "vpndeck-device-"+d.ID && cl.ID == d.UUID {
-				s.UUID = cl.ID
-				s.Flow = cl.Flow
-				return s, nil
-			}
+	for _, cl := range in.clients {
+		if cl.Email == deviceEmail(d.ID) && cl.ID == d.UUID {
+			return in.with(cl), nil
 		}
 	}
 	return nil, errors.New("managed device credential missing from xray")

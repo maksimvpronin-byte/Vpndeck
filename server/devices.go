@@ -57,6 +57,16 @@ func withConfigLock(path string, fn func(*Config) error) error {
 	return fn(c)
 }
 
+func (c *Config) activeDevices() int {
+	n := 0
+	for _, d := range c.Devices {
+		if !d.Disabled {
+			n++
+		}
+	}
+	return n
+}
+
 func validDeviceID(id string) bool {
 	if len(id) != 36 {
 		return false
@@ -113,7 +123,7 @@ func ensureDevice(path string, c *Config, account, id, name, legacyToken string)
 			}
 		}
 	}
-	base, err := readVlessServer(c, account)
+	in, err := readInbound(c)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +132,7 @@ func ensureDevice(path string, c *Config, account, id, name, legacyToken string)
 		d.LegacyTokenHash = tokenHash(legacyToken)
 	}
 	c.Devices = append(c.Devices, d)
-	if err := commitDeviceChange(path, c, d.ID, base.Flow); err != nil {
+	if err := commitDeviceChange(path, c, d.ID, in.flow()); err != nil {
 		return nil, err
 	}
 	return &c.Devices[len(c.Devices)-1], nil
@@ -162,7 +172,7 @@ func deviceXrayConfig(c *Config, data []byte, id, flow string) ([]byte, error) {
 		if d == nil {
 			return nil, errors.New("unknown device")
 		}
-		email := "vpndeck-device-" + id
+		email := deviceEmail(id)
 		next := make([]map[string]json.RawMessage, 0, len(clients)+1)
 		for _, cl := range clients {
 			var e string

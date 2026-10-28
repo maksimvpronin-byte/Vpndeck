@@ -148,11 +148,16 @@ func cmdCheck(path string) error {
 	if err != nil {
 		return err
 	}
-	s, err := readVlessServer(c, "")
+	in, err := readInbound(c)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("ok: inbound %q -> %s:%d sni=%s flow=%s users=%d\n", s.Tag, s.Host, s.Port, s.ServerName, s.Flow, len(c.Users))
+	s := in.server
+	fmt.Printf("ok: inbound %q -> %s:%d sni=%s flow=%s users=%d devices=%d\n",
+		s.Tag, s.Host, s.Port, s.ServerName, in.flow(), len(c.Users), c.activeDevices())
+	if _, ok := in.sharedClient(""); !ok {
+		fmt.Println("warning: the inbound has no shared client; apps without their own device credential (before 0.1.6) cannot connect")
+	}
 	return nil
 }
 
@@ -302,14 +307,6 @@ func (h *handler) profile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
-func buildProfile(c *Config, u *User) (*profile, error) {
-	s, err := readVlessServer(c, u.Name)
-	if err != nil {
-		return nil, err
-	}
-	return &profile{Version: 1, Account: u.Name, Servers: []VlessServer{*s}, RefreshInterval: profileRefreshSeconds}, nil
-}
-
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -351,20 +348,19 @@ func loginResponse(c *Config, u *User, d *Device, now time.Time) (any, error) {
 	return map[string]any{"token": token, "profile": p}, nil
 }
 
+// buildDeviceProfile hands a device its own credential and everyone else the shared one.
 func buildDeviceProfile(c *Config, u *User, d *Device) (*profile, error) {
-	p, err := buildProfile(c, u)
+	var s *VlessServer
+	var err error
+	if d != nil {
+		s, err = readManagedServer(c, d)
+	} else {
+		s, err = readVlessServer(c, u.Name)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if d != nil {
-		// Strict lookup prevents a removed credential falling back to the shared one.
-		matched, err := readManagedServer(c, d)
-		if err != nil {
-			return nil, err
-		}
-		p.Servers = []VlessServer{*matched}
-	}
-	return p, nil
+	return &profile{Version: 1, Account: u.Name, Servers: []VlessServer{*s}, RefreshInterval: profileRefreshSeconds}, nil
 }
 
 func (h *handler) registerDevice(w http.ResponseWriter, r *http.Request) {
