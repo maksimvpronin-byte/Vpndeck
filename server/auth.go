@@ -52,7 +52,8 @@ func checkPassword(encoded, password string) bool {
 
 // Tokens are stateless: "v1.<user>.<issued>.<mac>". The MAC covers the
 // user's current password hash, so changing the password logs out every
-// device; rotating token_secret logs out everyone.
+// device; rotating token_secret logs out everyone. They never expire unless
+// legacy_token_max_age_days is set; device tokens (v2) are revoked per device.
 func issueToken(secret string, u *User, now time.Time) string {
 	user := base64.RawURLEncoding.EncodeToString([]byte(u.Name))
 	issued := strconv.FormatInt(now.Unix(), 10)
@@ -104,6 +105,13 @@ func verifyLegacyToken(c *Config, token string) (*User, error) {
 	want := tokenMAC(c.TokenSecret, parts[1], parts[2], u.PasswordHash)
 	if !hmac.Equal([]byte(want), []byte(parts[3])) {
 		return nil, errors.New("bad token")
+	}
+	if c.LegacyTokenMaxAgeDays > 0 {
+		issued, err := strconv.ParseInt(parts[2], 10, 64)
+		maxAge := time.Duration(c.LegacyTokenMaxAgeDays) * 24 * time.Hour
+		if err != nil || time.Since(time.Unix(issued, 0)) > maxAge {
+			return nil, errors.New("token expired")
+		}
 	}
 	return u, nil
 }

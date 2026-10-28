@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setup(t *testing.T) (*handler, string, string) {
@@ -104,5 +105,23 @@ func TestLockout(t *testing.T) {
 	}
 	if rec := doLogin(h, "family", "correct horse"); rec.Code != 429 {
 		t.Fatalf("expected lockout, got %d", rec.Code)
+	}
+}
+
+func TestLegacyTokenMaxAge(t *testing.T) {
+	h, cfgPath, _ := setup(t)
+	c, _ := loadConfig(cfgPath)
+	old := issueToken(c.TokenSecret, &c.Users[0], time.Now().Add(-3*24*time.Hour))
+	fresh := issueToken(c.TokenSecret, &c.Users[0], time.Now())
+	if doProfile(h, old).Code != 200 {
+		t.Fatal("tokens must not expire by default")
+	}
+	c.LegacyTokenMaxAgeDays = 2
+	saveConfig(cfgPath, c)
+	if doProfile(h, old).Code != 401 {
+		t.Fatal("expired token accepted")
+	}
+	if doProfile(h, fresh).Code != 200 {
+		t.Fatal("fresh token rejected")
 	}
 }

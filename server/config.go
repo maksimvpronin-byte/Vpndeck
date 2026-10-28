@@ -26,6 +26,9 @@ type Config struct {
 	ManageDevices      bool     `json:"manage_devices,omitempty"`
 	XrayRestartCommand []string `json:"xray_restart_command,omitempty"`
 	Devices            []Device `json:"devices,omitempty"`
+	// LegacyTokenMaxAgeDays, if set, expires v1 tokens (apps before 0.1.6 and
+	// sessions not yet moved to a device) this many days after login. 0 = never.
+	LegacyTokenMaxAgeDays int `json:"legacy_token_max_age_days,omitempty"`
 }
 
 type User struct {
