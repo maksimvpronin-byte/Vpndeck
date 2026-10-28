@@ -193,21 +193,24 @@ object ApiClient {
 
     private fun hostForUrl(host: String) = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
 
-    /** "1.2.3.4", "1.2.3.4:8448", "vpn.example.com" -> host and port. */
+    /** "1.2.3.4", "1.2.3.4:8448", "vpn.example.com", "[::1]:8448", "https://host/" -> host and port. */
     fun parseAddress(input: String): Pair<String, Int>? {
-        val s = input.trim().removePrefix("https://").removeSuffix("/")
+        val s = input.trim().removePrefix("https://").removePrefix("http://").substringBefore('/')
         if (s.isEmpty()) return null
         if (s.startsWith("[")) {
             val end = s.indexOf(']')
-            if (end < 0) return null
-            val port = s.substring(end + 1).removePrefix(":").toIntOrNull() ?: DEFAULT_PORT
+            if (end <= 1) return null
+            val rest = s.substring(end + 1)
+            val port = if (rest.isEmpty()) DEFAULT_PORT else parsePort(rest.removePrefix(":")) ?: return null
             return s.substring(1, end) to port
         }
         val parts = s.split(':')
         return when (parts.size) {
             1 -> s to DEFAULT_PORT
-            2 -> parts[0] to (parts[1].toIntOrNull()?.takeIf { it in 1..65535 } ?: return null)
+            2 -> if (parts[0].isEmpty()) null else parts[0] to (parsePort(parts[1]) ?: return null)
             else -> s to DEFAULT_PORT // bare IPv6
         }
     }
+
+    private fun parsePort(s: String): Int? = s.toIntOrNull()?.takeIf { it in 1..65535 }
 }

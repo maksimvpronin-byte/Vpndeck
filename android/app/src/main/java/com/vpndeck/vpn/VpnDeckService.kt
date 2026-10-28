@@ -670,11 +670,9 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
         }
 
         fun stop(context: Context) {
+            // Recorded first: if the service isn't running, nobody receives the broadcast.
             Store.wantConnected = false
             context.sendBroadcast(Intent(ACTION_STOP).setPackage(context.packageName))
-            // If the service is not running yet, there is nobody to receive the
-            // broadcast; make sure the user's intent is still recorded.
-            Store.wantConnected = false
         }
     }
 }

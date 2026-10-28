@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.getSystemService
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.vpndeck.BuildConfig
+import com.vpndeck.R
 import com.vpndeck.data.Store
 import com.vpndeck.update.Updater
 import com.vpndeck.vpn.VpnDeckService
@@ -130,7 +131,10 @@ fun HomeScreen(modifier: Modifier, openApps: () -> Unit) {
         }
 
         OutlinedButton(onClick = openApps, modifier = Modifier.fillMaxWidth()) {
-            Text(if (apps.isEmpty()) "Выбрать приложения для VPN" else "Через VPN: ${apps.size} ${plural(apps.size, "приложение", "приложения", "приложений")}")
+            Text(
+                if (apps.isEmpty()) "Выбрать приложения для VPN"
+                else ctx.resources.getQuantityString(R.plurals.apps_via_vpn, apps.size, apps.size),
+            )
         }
 
         DiagnosticsCard()
@@ -247,16 +251,6 @@ private fun StabilityCard() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-    }
-}
-
-fun plural(n: Int, one: String, few: String, many: String): String {
-    val n10 = n % 10
-    val n100 = n % 100
-    return when {
-        n10 == 1 && n100 != 11 -> one
-        n10 in 2..4 && n100 !in 12..14 -> few
-        else -> many
     }
 }
 

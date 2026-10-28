@@ -6,6 +6,7 @@ import android.net.VpnService
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import com.vpndeck.R
 import com.vpndeck.data.Store
 import com.vpndeck.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
@@ -51,9 +52,13 @@ class QuickTile : TileService() {
     private fun render(status: VpnState.Status) {
         val tile = qsTile ?: return
         tile.state = when (status) {
-            VpnState.Status.Running -> Tile.STATE_ACTIVE
+            // Connecting counts as on, so a tap can cancel a connection that hangs.
+            VpnState.Status.Running, VpnState.Status.Starting -> Tile.STATE_ACTIVE
             VpnState.Status.Stopped -> Tile.STATE_INACTIVE
-            else -> Tile.STATE_UNAVAILABLE
+            VpnState.Status.Stopping -> Tile.STATE_UNAVAILABLE
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            tile.subtitle = if (status == VpnState.Status.Starting) getString(R.string.status_starting) else null
         }
         tile.updateTile()
     }
