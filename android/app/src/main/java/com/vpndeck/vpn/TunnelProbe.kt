@@ -10,25 +10,30 @@ import java.net.URL
 
 /** Any reachable independent endpoint is enough; a blocked probe must not cause reloads. */
 object TunnelProbe {
+    /** An HTTPS check; [expectedBody] (for 200 answers) proves it wasn't a captive portal. */
+    internal data class Endpoint(val url: String, val expectedBody: String? = null)
+
     internal val endpoints = listOf(
-        "https://www.gstatic.com/generate_204",
-        "https://cp.cloudflare.com/generate_204",
-        "https://www.msftconnecttest.com/connecttest.txt",
+        Endpoint("https://www.gstatic.com/generate_204"),
+        Endpoint("https://cp.cloudflare.com/generate_204"),
+        // Not msftconnecttest.com: it answers HTTPS with someone else's certificate.
+        Endpoint("https://detectportal.firefox.com/success.txt", expectedBody = "success"),
     )
 
     suspend fun check(): Boolean = withContext(Dispatchers.IO) {
-        firstReachable(endpoints) { address ->
+        firstReachable(endpoints) { endpoint ->
             currentCoroutineContext().ensureActive()
-            val conn = URL(address).openConnection() as HttpURLConnection
+            val conn = URL(endpoint.url).openConnection() as HttpURLConnection
             try {
                 conn.connectTimeout = 4_000
                 conn.readTimeout = 4_000
                 conn.instanceFollowRedirects = false
                 conn.useCaches = false
-                if (address.endsWith("connecttest.txt")) {
-                    conn.responseCode == 200 && conn.inputStream.bufferedReader().use { it.readText().trim() } == "Microsoft Connect Test"
-                } else {
+                val expected = endpoint.expectedBody
+                if (expected == null) {
                     conn.responseCode == 204
+                } else {
+                    conn.responseCode == 200 && conn.inputStream.bufferedReader().use { it.readText().trim() } == expected
                 }
             } finally {
                 conn.disconnect()
@@ -36,7 +41,7 @@ object TunnelProbe {
         }
     }
 
-    internal suspend fun firstReachable(addresses: List<String>, probe: suspend (String) -> Boolean): Boolean {
+    internal suspend fun <T> firstReachable(addresses: List<T>, probe: suspend (T) -> Boolean): Boolean {
         for (address in addresses) {
             try {
                 if (probe(address)) return true
