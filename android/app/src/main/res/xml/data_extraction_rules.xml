@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The session (token, device ID, pinned server key) belongs to this installation.
+     Copied to a new phone, it would make two phones one "device" for the server, so
+     a new phone signs in on its own. android:allowBackup="false" doesn't cover
+     device-to-device transfer on Android 12+; these rules do. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="vpndeck.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="vpndeck.xml" />
+    </device-transfer>
+</data-extraction-rules>
