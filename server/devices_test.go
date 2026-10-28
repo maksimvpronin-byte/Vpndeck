@@ -360,3 +360,36 @@ func TestRevokedDevicesDoNotCountTowardsLimit(t *testing.T) {
 	fill(true)
 	responseToken(t, register(h, token, testDeviceA))
 }
+
+func TestXrayConfigKeepsItsLayout(t *testing.T) {
+	h, _, c := managedSetup(t)
+	data, err := os.ReadFile(c.XrayConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keys in an order no sorted encoder would produce.
+	body := strings.TrimSpace(string(data))
+	ordered := `{"log":{"loglevel":"warning"},` + body[1:len(body)-1] + `,"outbounds":[{"protocol":"freedom","tag":"direct"}]}`
+	if err := os.WriteFile(c.XrayConfig, []byte(ordered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	responseToken(t, register(h, issueToken(c.TokenSecret, &c.Users[0], time.Now()), testDeviceA))
+	out, _ := os.ReadFile(c.XrayConfig)
+	text := string(out)
+	for _, keys := range [][]string{
+		{`"log"`, `"inbounds"`, `"outbounds"`},
+		{`"tag": "vless-reality-8443"`, `"port": 8443`, `"protocol": "vless"`, `"settings"`, `"streamSettings"`},
+	} {
+		last := -1
+		for _, k := range keys {
+			i := strings.Index(text, k)
+			if i < 0 || i < last {
+				t.Fatalf("key %s moved or vanished:\n%s", k, text)
+			}
+			last = i
+		}
+	}
+	if !strings.Contains(text, deviceEmail(testDeviceA)) || !strings.Contains(text, "11111111-2222-3333-4444-555555555555") {
+		t.Fatalf("clients not updated as expected:\n%s", text)
+	}
+}

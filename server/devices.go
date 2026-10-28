@@ -43,6 +43,9 @@ var (
 
 const maxActiveDevices = 100
 
+// xrayRestartTimeout is generous for `docker restart` (10 s stop grace + start).
+const xrayRestartTimeout = 25 * time.Second
+
 // deviceErrorCode tells the app why a correct password or a valid token was
 // still refused. The status stays 401 in every case, so older apps behave as before.
 func deviceErrorCode(err error, fallback string) string {
@@ -172,57 +175,68 @@ func ensureDevice(path string, c *Config, account, id, name, legacyToken string)
 }
 
 // Modify only the selected inbound's managed clients, preserving unrelated
-// inbounds, settings, Reality keys and existing legacy clients byte-for-value.
+// inbounds, settings, Reality keys, existing legacy clients and the order of
+// keys the admin wrote them in.
 func deviceXrayConfig(c *Config, data []byte, id, flow string) ([]byte, error) {
-	var root map[string]json.RawMessage
+	d := c.device(id)
+	if d == nil {
+		return nil, errors.New("unknown device")
+	}
+	var root jsonObject
 	if err := json.Unmarshal(data, &root); err != nil {
 		return nil, err
 	}
-	var inbounds []map[string]json.RawMessage
-	if err := json.Unmarshal(root["inbounds"], &inbounds); err != nil {
+	var inbounds []jsonObject
+	if err := json.Unmarshal(root.get("inbounds"), &inbounds); err != nil {
 		return nil, err
 	}
-	for _, in := range inbounds {
+	for i := range inbounds {
+		in := &inbounds[i]
 		var protocol, tag string
-		json.Unmarshal(in["protocol"], &protocol)
-		json.Unmarshal(in["tag"], &tag)
+		json.Unmarshal(in.get("protocol"), &protocol)
+		json.Unmarshal(in.get("tag"), &tag)
 		var stream struct {
 			Security string `json:"security"`
 		}
-		json.Unmarshal(in["streamSettings"], &stream)
+		json.Unmarshal(in.get("streamSettings"), &stream)
 		if protocol != "vless" || stream.Security != "reality" || (c.InboundTag != "" && tag != c.InboundTag) {
 			continue
 		}
-		var settings map[string]json.RawMessage
-		if err := json.Unmarshal(in["settings"], &settings); err != nil {
+		var settings jsonObject
+		if err := json.Unmarshal(in.get("settings"), &settings); err != nil {
 			return nil, err
 		}
-		var clients []map[string]json.RawMessage
-		if err := json.Unmarshal(settings["clients"], &clients); err != nil {
+		var clients []json.RawMessage
+		if err := json.Unmarshal(settings.get("clients"), &clients); err != nil {
 			return nil, err
-		}
-		d := c.device(id)
-		if d == nil {
-			return nil, errors.New("unknown device")
 		}
 		email := deviceEmail(id)
-		next := make([]map[string]json.RawMessage, 0, len(clients)+1)
+		next := make([]json.RawMessage, 0, len(clients)+1)
 		for _, cl := range clients {
-			var e string
-			json.Unmarshal(cl["email"], &e)
-			if e != email {
+			var other struct {
+				Email string `json:"email"`
+			}
+			json.Unmarshal(cl, &other)
+			if other.Email != email {
 				next = append(next, cl)
 			}
 		}
 		if !d.Disabled {
-			raw, _ := json.Marshal(map[string]string{"id": d.UUID, "email": email, "flow": flow})
-			var cl map[string]json.RawMessage
-			json.Unmarshal(raw, &cl)
+			cl, err := json.Marshal(xrayClient{ID: d.UUID, Flow: flow, Email: email})
+			if err != nil {
+				return nil, err
+			}
 			next = append(next, cl)
 		}
-		settings["clients"], _ = json.Marshal(next)
-		in["settings"], _ = json.Marshal(settings)
-		root["inbounds"], _ = json.Marshal(inbounds)
+		if err := settings.set("clients", next); err != nil {
+			return nil, err
+		}
+		if err := in.set("settings", settings); err != nil {
+			return nil, err
+		}
+		if err := root.set("inbounds", inbounds); err != nil {
+			return nil, err
+		}
 		return json.MarshalIndent(root, "", "  ")
 	}
 	return nil, errors.New("no matching inbound")
@@ -255,7 +269,8 @@ func restartXray(c *Config) error {
 	if len(c.XrayRestartCommand) == 0 {
 		return errors.New("xray_restart_command is required for device management")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	// Fits twice (restart, then restart after rollback) into the API's write timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), xrayRestartTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.XrayRestartCommand[0], c.XrayRestartCommand[1:]...)
 	// Never propagate daemon output (which could contain configuration secrets).
