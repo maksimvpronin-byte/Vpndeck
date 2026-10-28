@@ -22,18 +22,24 @@
   ядро — sing-box **1.14.3** из `scripts/build-libbox.sh` (теги: `with_gvisor,with_utls`).
   Конфиг sing-box генерирует `ConfigBuilder.kt` (проверен `sing-box check`).
   `TunnelWatchdog.kt` — сторож: раз в 4 мин и через 5 с после смены сети шлёт через туннель
-  `https://www.gstatic.com/generate_204`; если не проходит — запрашивает профиль напрямую (мимо туннеля)
+  HTTPS-проверки (`TunnelProbe.kt`: gstatic, cloudflare, firefox detectportal — достаточно одной);
+  если ни одна не проходит — запрашивает профиль напрямую (мимо туннеля)
   и делает reload. Если и сервер входа недоступен — ничего не перезапускает, ретраи с бэкоффом до 15 мин.
 
-Контракт API: `POST /api/v1/login {username,password}` → `{token, profile}`;
-`GET /api/v1/profile` (Bearer) → profile. Формат profile — `server/xray.go` (`VlessServer`)
-и `android/.../data/Profile.kt`; менять только синхронно.
+Контракт API: `POST /api/v1/login {username,password,device_id,device_name}` → `{token, profile}`;
+`GET /api/v1/profile` (Bearer) → profile; `POST /api/v1/device {device_id,device_name}` (Bearer v1)
+→ `{token, profile}` с токеном v2 и отдельным UUID устройства (404 — сервер без устройств).
+Отказ — 401 с `{"error": …}`: `invalid_credentials`, `unauthorized`, `device_revoked`,
+`device_other_account` (статус всегда 401, чтобы старые APK вели себя как раньше).
+Формат profile — `server/xray.go` (`VlessServer`) и `android/.../data/Profile.kt`; менять только
+синхронно, вместе с образцом `server/testdata/profile.json` (его проверяют тесты обеих сторон).
 
 ## Структура
 
 | Путь | Что |
 |---|---|
 | `server/*.go` | vpndeck-server + тесты (`go test ./...`) |
+| `server/testdata/profile.json` | образец профиля — контракт сервера и приложения, проверяют тесты обеих сторон |
 | `server/deploy/deploy.sh` | сборка под linux и установка/обновление бинарника по SSH (запуск с Mac) |
 | `server/deploy/setup-xray.sh` | создание Xray VLESS+Reality со свежими ключами (запуск на сервере) |
 | `server/deploy/find-sni.py` | поиск сайта для маскировки Reality среди соседей по подсети (запуск на сервере) |
@@ -43,6 +49,7 @@
 | `scripts/verify-apks.sh` | проверка APK: все ABI, версия, подпись релизным ключом |
 | `.github/workflows/release.yml` | тег `v*` → сборка ядра и APK, подпись ключом из секретов, **черновик** релиза |
 | `android/` | приложение; APK в `android/app/build/outputs/apk/` |
+| `CHANGELOG.md` | что менялось по версиям; текст «что нового» для `release.sh` — оттуда |
 
 В git **нет**: APK, `libbox.aar`, бинарников, `.deps/`, `dist/`, ключа подписи
 (`android/keystore/`, `android/keystore.properties`), `local.properties`.
@@ -56,10 +63,13 @@
 - Связь с GitHub/Google медленная и рвётся: `git clone` повторять, крупные загрузки — в фоне.
 
 ```bash
-(cd server && go test ./...)
+(cd server && go test -race ./... && go vet ./...)
 scripts/build-libbox.sh                      # ~1–2 мин, нужен перед первой сборкой APK
-cd android && ./gradlew assembleRelease      # подпись — из keystore.properties
+(cd android && ./gradlew testDebugUnitTest lintRelease assembleRelease)   # подпись — из keystore.properties
 ```
+
+Сервер требует Go 1.26+ (`server/go.mod`; более старый Go сам скачает нужный). Ядро в CI собирается
+отдельным Go 1.25 — его версию меняй только вместе с `SING_BOX_VERSION`.
 
 Если `android/keystore.properties` нет (новая машина) — release подпишется debug-ключом,
 и **обновление поверх уже установленных телефонов не встанет**. Ключ хранится у пользователя
@@ -114,6 +124,7 @@ gh release edit v0.1.4 --draft=false --latest  # публикация → тел
    read -s P && echo "$P" | vpndeck-server passwd family
    systemctl enable --now vpndeck-server
    vpndeck-server check && vpndeck-server fingerprint
+   vpndeck-server devices enable xray-reality-8443   # отдельный UUID на каждый телефон
    ```
    Пароль генерируй сам (`xxxx-xxxx-xxxx` из `abcdefghjkmnpqrstuvwxyz23456789`), передай
    пользователю в чате, в файлы репозитория не пиши.
@@ -150,6 +161,13 @@ gh release edit v0.1.4 --draft=false --latest  # публикация → тел
 - **Не перегенерировать `/etc/vpndeck/tls.{crt,key}`** — все телефоны увидят «ключ изменился».
 - **Проверка «IP совпал с сервером» ничего не доказывает**: Mac пользователя сам выходит в
   интернет через VPN-сервер. Только негативный контроль или логи ядра (`outbound/vless[proxy]`).
+- **Проверки туннеля — только HTTPS с корректным сертификатом.** `msftconnecttest.com` по HTTPS отдаёт
+  чужой сертификат (Akamai) и не проходит никогда; новые адреса проверяй `curl -s -o /dev/null -w '%{http_code}'`.
+- **Не сигналить «сессия сменилась» через `CancellationException`.** Брошенная из цикла сторожа или
+  обновления профиля, она молча завершает корутину. `refreshOrCached` возвращает `null`.
+- **Миграция на отдельный UUID (`POST /api/v1/device`) может перезапустить Xray** — дольше 5 с таймаута
+  подключения. Поэтому при подключении только `GET /profile`, миграция — в фоне через 5 с.
+- **`deploy.sh` перезаписывает unit-файл.** Свои правки на сервере — только drop-in (`systemctl edit vpndeck-server`).
 - `nc` в Android (toybox) рвёт соединение при EOF stdin: держать stdin открытым
   `(printf '…'; sleep 3) | nc host 80`.
 - Соединения Xray видны только в netns контейнера (Docker делает DNAT):
@@ -178,20 +196,20 @@ Claude для этого проекта, иначе — спросить пол�
 и другие сервисы пользователя — их не трогать. Контейнер Xray исторически называется
 `xray-reality-8443` и лежит в `/opt/xray-reality-8443/`, хотя слушает уже 443.
 
+## Устройства (с 0.1.6)
 
-## Изменения 0.1.6
+- Устройство — случайный ID установки, не средство авторизации. Токены v2 привязаны к аккаунту, хешу
+  пароля, устройству и его UUID. Токен v1, с которым сессия перешла на устройство, привязывается к нему
+  же и отзывается вместе с ним. Запись отозванного устройства не удаляется (держит этот токен мёртвым),
+  но в лимит 100 не входит.
+- Управление устройствами меняет только `clients` выбранного VLESS+Reality inbound (порядок ключей
+  конфига сохраняется) и перезапускает указанный контейнер; ключи Reality/TLS не меняются. При ошибке — rollback.
+- Общий UUID — первый клиент inbound, **не** `vpndeck-device-*`; если общего нет, сессии без устройства
+  получают ошибку, а не чужой UUID.
+- Один телефон — свой ID на каждый аккаунт (`Store.deviceIdFor`): на `device_other_account`
+  приложение заводит новый ID и повторяет запрос один раз.
+- Порядок запуска защищён отменой startJob и проверкой wantConnected после запроса. STOP-ресивер
+  регистрируется до fetch. `CancellationException` не превращать в ошибку сети.
+- Сессия (`shared_prefs/vpndeck.xml`) исключена из бэкапа и переноса на другой телефон (`data_extraction_rules.xml`).
 
-- Порядок запуска защищён отменой startJob и проверкой wantConnected после запроса.
-  CancellationException не превращать в ошибку сети. STOP-ресивер регистрируется до fetch.
-- refreshOrCached разделяет транспортные сбои, 401 и pin mismatch; актуальность сессии
-  проверяется до сохранения ответа. API fetchSession мигрирует v1 → v2 через POST /api/v1/device;
-  404 сохраняет совместимость со старым сервером. Новые логины передают device_id/device_name.
-- Устройство — случайный ID установки, не средство авторизации. Серверные v2-токены
-  привязаны к аккаунту, хешу пароля, устройству и его UUID. Исходный токен миграции
-  привязывается к тому же устройству и тоже отзывается. Общий UUID старых клиентов
-  автоматически не удаляется; подробно — README.
-- Команды: devices, devices enable <container>, devices revoke <id>. Управление
-  устройствами меняет только clients выбранного VLESS+Reality inbound и перезапускает
-  указанный контейнер; никакие ключи Reality/TLS не меняются. При ошибке — rollback.
-- Проверки: (cd server && go test -race ./... && go vet ./...),
-  (cd android && ./gradlew testDebugUnitTest lintRelease assembleRelease).
+История изменений — `CHANGELOG.md`.
