@@ -283,6 +283,7 @@ private fun UpdateCard() {
         is Updater.State.Downloading -> st.release
         is Updater.State.NeedsPermission -> st.release
         is Updater.State.Installing -> st.release
+        is Updater.State.NeedsConfirmation -> st.release
         is Updater.State.Failed -> st.release
         else -> null
     } ?: return
@@ -299,6 +300,10 @@ private fun UpdateCard() {
                     Text("Загрузка… ${st.percent}%", style = MaterialTheme.typography.bodySmall)
                 }
                 is Updater.State.Installing -> Text("Установка…", style = MaterialTheme.typography.bodySmall)
+                is Updater.State.NeedsConfirmation -> {
+                    Text("Осталось подтвердить установку.", style = MaterialTheme.typography.bodySmall)
+                    Button(onClick = { Updater.confirm(ctx) }) { Text("Установить") }
+                }
                 is Updater.State.NeedsPermission -> {
                     Text(
                         "Разрешите VpnDeck устанавливать обновления — это нужно один раз.",

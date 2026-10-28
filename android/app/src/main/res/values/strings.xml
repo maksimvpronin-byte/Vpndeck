@@ -4,6 +4,8 @@
     <string name="channel_updates">Обновления приложения</string>
     <string name="update_available_title">Доступна новая версия VpnDeck</string>
     <string name="update_available_text">Версия %1$s. Откройте приложение, чтобы обновить.</string>
+    <string name="update_confirm_title">Обновление VpnDeck скачано</string>
+    <string name="update_confirm_text">Нажмите, чтобы подтвердить установку версии %1$s.</string>
     <string name="status_starting">Подключение…</string>
     <plurals name="status_running_apps">
         <item quantity="one">Подключено · %d приложение через VPN</item>

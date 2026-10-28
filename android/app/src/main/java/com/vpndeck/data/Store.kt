@@ -142,6 +142,11 @@ object Store {
         get() = prefs.getLong(K_UPDATE_CHECK, 0)
         set(value) = prefs.edit { putLong(K_UPDATE_CHECK, value) }
 
+    /** The newer release last found on GitHub (JSON), so the update card survives a process restart. */
+    var availableUpdate: String?
+        get() = prefs.getString(K_UPDATE_AVAILABLE, null)
+        set(value) = prefs.edit { if (value == null) remove(K_UPDATE_AVAILABLE) else putString(K_UPDATE_AVAILABLE, value) }
+
     /** Version we already notified about, so the notification isn't repeated. */
     var notifiedUpdate: String?
         get() = prefs.getString(K_UPDATE_NOTIFIED, null)
@@ -160,4 +165,5 @@ object Store {
     private const val K_START_ON_BOOT = "start_on_boot"
     private const val K_UPDATE_CHECK = "update_check_at"
     private const val K_UPDATE_NOTIFIED = "update_notified"
+    private const val K_UPDATE_AVAILABLE = "update_available"
 }

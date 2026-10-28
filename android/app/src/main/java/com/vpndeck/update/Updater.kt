@@ -1,5 +1,6 @@
 package com.vpndeck.update
 
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -8,9 +9,13 @@ import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.content.getSystemService
 import com.vpndeck.BuildConfig
+import com.vpndeck.R
 import com.vpndeck.VpnDeckApp
 import com.vpndeck.data.Store
+import com.vpndeck.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,6 +45,8 @@ object Updater {
         data class Downloading(val release: Release, val percent: Int) : State
         data class NeedsPermission(val release: Release) : State
         data class Installing(val release: Release) : State
+        /** Android wants the user to confirm; [confirm] opens its dialog. */
+        data class NeedsConfirmation(val release: Release, val confirm: Intent) : State
         data class Failed(val release: Release?, val message: String) : State
     }
 
@@ -48,18 +55,30 @@ object Updater {
 
     private const val CHECK_EVERY_MS = 6 * 3600_000L
     private const val TIMEOUT_MS = 20_000
+    private const val CONFIRM_NOTIFICATION_ID = 3
+
+    /** Whether MainActivity is on screen: only then may we open the install dialog ourselves. */
+    @Volatile
+    var uiVisible = false
 
     /** Returns the newer release, if any. Without [force] hits GitHub at most every 6 hours. */
     suspend fun check(force: Boolean = false): Release? = withContext(Dispatchers.IO) {
         val current = _state.value
-        if (current is State.Downloading || current is State.Installing) return@withContext null
+        if (current is State.Downloading || current is State.Installing || current is State.NeedsConfirmation) {
+            return@withContext null
+        }
         if (!force && System.currentTimeMillis() - Store.lastUpdateCheck < CHECK_EVERY_MS) {
-            return@withContext (current as? State.Available)?.release
+            if (current is State.Available) return@withContext current.release
+            // A release found before the process restarted must not vanish for 6 hours.
+            val known = if (current == State.Idle) remembered() else null
+            if (known != null) _state.value = State.Available(known)
+            return@withContext known
         }
         _state.value = State.Checking
         try {
             val release = fetchLatest()
             Store.lastUpdateCheck = System.currentTimeMillis()
+            remember(release)
             _state.value = if (release != null) State.Available(release) else State.UpToDate
             release
         } catch (e: Exception) {
@@ -67,6 +86,21 @@ object Updater {
             _state.value = if (force) State.Failed(null, "Не удалось связаться с GitHub") else State.Idle
             null
         }
+    }
+
+    private fun remember(release: Release?) {
+        Store.availableUpdate = release?.let {
+            JSONObject().put("version", it.version).put("url", it.url).put("size", it.size).put("notes", it.notes).toString()
+        }
+    }
+
+    private fun remembered(): Release? {
+        val raw = Store.availableUpdate ?: return null
+        val release = runCatching {
+            val o = JSONObject(raw)
+            Release(o.getString("version"), o.getString("url"), o.getLong("size"), o.optString("notes"))
+        }.getOrNull()
+        return release?.takeIf { isNewer(it.version, BuildConfig.VERSION_NAME) }
     }
 
     private fun fetchLatest(): Release? {
@@ -177,6 +211,9 @@ object Updater {
                 setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
             }
         }
+        // Sessions left over from an earlier attempt (e.g. the process died while Android waited
+        // for confirmation) would only pile up.
+        installer.mySessions.forEach { runCatching { installer.abandonSession(it.sessionId) } }
         val id = installer.createSession(params)
         installer.openSession(id).use { session ->
             session.openWrite("vpndeck.apk", 0, file.length()).use { out ->
@@ -191,17 +228,67 @@ object Updater {
         }
     }
 
-    internal fun onInstallFailed(message: String) {
-        val release = when (val s = _state.value) {
-            is State.Installing -> s.release
-            is State.Available -> s.release
-            else -> null
+    /**
+     * Android needs the user's OK. It can only be asked from the foreground: when the
+     * user left during the download, opening the dialog would be silently blocked, so
+     * the card offers a button and a notification brings the user back.
+     */
+    internal fun onUserActionRequired(context: Context, confirm: Intent) {
+        val release = pendingRelease()
+        if (release == null) {
+            // The process restarted meanwhile; nothing to show in the card, try directly.
+            runCatching { context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            return
         }
-        _state.value = State.Failed(release, message)
+        _state.value = State.NeedsConfirmation(release, confirm)
+        if (uiVisible) {
+            runCatching { context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        } else {
+            notifyConfirm(context, release.version)
+        }
+    }
+
+    private fun notifyConfirm(context: Context, version: String) {
+        val open = PendingIntent.getActivity(
+            context, CONFIRM_NOTIFICATION_ID,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = NotificationCompat.Builder(context, VpnDeckApp.CHANNEL_UPDATES)
+            .setSmallIcon(R.drawable.ic_tile)
+            .setContentTitle(context.getString(R.string.update_confirm_title))
+            .setContentText(context.getString(R.string.update_confirm_text, version))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        runCatching { context.getSystemService<NotificationManager>()?.notify(CONFIRM_NOTIFICATION_ID, n) }
+    }
+
+    /** Called when the user taps "Установить" in the card. */
+    fun confirm(context: Context) {
+        val st = _state.value as? State.NeedsConfirmation ?: return
+        context.getSystemService<NotificationManager>()?.cancel(CONFIRM_NOTIFICATION_ID)
+        runCatching { context.startActivity(st.confirm) }
+            .onFailure { _state.value = State.Failed(st.release, "Не удалось открыть установку: ${it.message}") }
+    }
+
+    private fun pendingRelease(): Release? = when (val s = _state.value) {
+        is State.Installing -> s.release
+        is State.NeedsConfirmation -> s.release
+        is State.Available -> s.release
+        else -> null
+    }
+
+    internal fun onInstallFailed(message: String) {
+        _state.value = State.Failed(pendingRelease(), message)
     }
 
     internal fun onInstallCancelled() {
-        (_state.value as? State.Installing)?.let { _state.value = State.Available(it.release) }
+        when (val s = _state.value) {
+            is State.Installing -> _state.value = State.Available(s.release)
+            is State.NeedsConfirmation -> _state.value = State.Available(s.release)
+            else -> Unit
+        }
     }
 
     fun permissionReturned() {

@@ -26,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.vpndeck.data.Store
+import com.vpndeck.update.Updater
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -44,6 +45,16 @@ class MainActivity : ComponentActivity() {
                 if (session == null) LoginScreen() else MainScreen()
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        Updater.uiVisible = true
+    }
+
+    override fun onStop() {
+        Updater.uiVisible = false
+        super.onStop()
     }
 }
 
