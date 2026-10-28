@@ -72,11 +72,15 @@ func authenticateToken(c *Config, token string) (*User, *Device, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	hash := tokenHash(token)
 	for i := range c.Devices {
 		d := &c.Devices[i]
-		if d.LegacyTokenHash != "" && d.LegacyTokenHash == tokenHash(token) {
-			if d.Disabled || d.Account != u.Name {
+		if d.LegacyTokenHash != "" && d.LegacyTokenHash == hash {
+			if d.Account != u.Name {
 				return nil, nil, errDeviceRejected
+			}
+			if d.Disabled {
+				return nil, nil, errDeviceRevoked
 			}
 			return u, d, nil
 		}
@@ -190,11 +194,15 @@ func verifyDeviceToken(c *Config, token string) (*User, *Device, error) {
 	}
 	u := c.user(string(raw))
 	d := c.device(p[2])
-	if u == nil || u.Disabled || d == nil || d.Disabled || d.Account != u.Name {
+	if u == nil || u.Disabled || d == nil || d.Account != u.Name {
 		return nil, nil, errDeviceRejected
 	}
 	if !hmac.Equal([]byte(p[4]), []byte(deviceMAC(c.TokenSecret, p[1], d, p[3], u.PasswordHash))) {
 		return nil, nil, errors.New("bad token")
+	}
+	// Only a genuine token learns that its device was revoked.
+	if d.Disabled {
+		return nil, nil, errDeviceRevoked
 	}
 	return u, d, nil
 }

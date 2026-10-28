@@ -28,7 +28,36 @@ type Device struct {
 	LegacyTokenHash string `json:"legacy_token_hash,omitempty"`
 }
 
-var errDeviceRejected = errors.New("device access revoked")
+// defaultXrayDir is where setup-xray.sh puts Xray; the systemd unit allows writing there.
+const defaultXrayDir = "/opt/xray-reality-8443"
+
+var (
+	// errDeviceRejected: the request can't be tied to this device (a token of
+	// another installation, a consumed migration token, credentials changed meanwhile).
+	errDeviceRejected = errors.New("device rejected")
+	// errDeviceRevoked: the admin revoked this installation with `devices revoke`.
+	errDeviceRevoked = errors.New("device access revoked")
+	// errDeviceOtherAccount: this installation is registered to a different account.
+	errDeviceOtherAccount = errors.New("device registered to another account")
+)
+
+const maxActiveDevices = 100
+
+// deviceErrorCode tells the app why a correct password or a valid token was
+// still refused. The status stays 401 in every case, so older apps behave as before.
+func deviceErrorCode(err error, fallback string) string {
+	switch {
+	case errors.Is(err, errDeviceRevoked):
+		return "device_revoked"
+	case errors.Is(err, errDeviceOtherAccount):
+		return "device_other_account"
+	}
+	return fallback
+}
+
+func isDeviceRefusal(err error) bool {
+	return errors.Is(err, errDeviceRejected) || errors.Is(err, errDeviceRevoked) || errors.Is(err, errDeviceOtherAccount)
+}
 
 func (c *Config) device(id string) *Device {
 	for i := range c.Devices {
@@ -104,8 +133,11 @@ func ensureDevice(path string, c *Config, account, id, name, legacyToken string)
 		return nil, errors.New("invalid device")
 	}
 	if d := c.device(id); d != nil {
-		if d.Account != account || d.Disabled {
-			return nil, errDeviceRejected
+		if d.Account != account {
+			return nil, errDeviceOtherAccount
+		}
+		if d.Disabled {
+			return nil, errDeviceRevoked
 		}
 		// A consumed legacy token may authenticate only its original installation.
 		if legacyToken != "" && d.LegacyTokenHash != tokenHash(legacyToken) {
@@ -113,7 +145,8 @@ func ensureDevice(path string, c *Config, account, id, name, legacyToken string)
 		}
 		return d, nil
 	}
-	if len(c.Devices) >= 100 {
+	// Revoked records stay (they keep consumed migration tokens dead) but don't count.
+	if c.activeDevices() >= maxActiveDevices {
 		return nil, errors.New("device limit reached")
 	}
 	if legacyToken != "" {
@@ -266,20 +299,28 @@ func commitDeviceChange(path string, c *Config, id, flow string) error {
 func cmdDevices(path string, args []string) error {
 	return withConfigLock(path, func(c *Config) error {
 		if len(args) == 0 {
-			fmt.Println("ID\tACCOUNT\tNAME\tSTATUS")
+			fmt.Println("ID\tACCOUNT\tNAME\tCREATED\tSTATUS")
 			for _, d := range c.Devices {
 				status := "active"
 				if d.Disabled {
 					status = "revoked"
 				}
-				fmt.Printf("%s\t%s\t%q\t%s\n", d.ID, d.Account, d.Name, status)
+				created := time.Unix(d.CreatedAt, 0).Format("2006-01-02")
+				fmt.Printf("%s\t%s\t%q\t%s\t%s\n", d.ID, d.Account, d.Name, created, status)
 			}
 			return nil
 		}
 		if len(args) == 2 && args[0] == "enable" {
 			c.ManageDevices = true
 			c.XrayRestartCommand = []string{"docker", "restart", args[1]}
-			return saveConfig(path, c)
+			if err := saveConfig(path, c); err != nil {
+				return err
+			}
+			if dir := filepath.Dir(c.XrayConfig); dir != defaultXrayDir {
+				fmt.Printf("note: the systemd unit may write only to /etc/vpndeck and %s; allow %s with\n"+
+					"  systemctl edit vpndeck-server   ->   [Service]  ReadWritePaths=%s\n", defaultXrayDir, dir, dir)
+			}
+			return nil
 		}
 		if len(args) == 2 && args[0] == "revoke" {
 			d := c.device(args[1])
@@ -296,6 +337,30 @@ func cmdDevices(path string, args []string) error {
 			fmt.Println("device revoked; its VPN credential has been removed from Xray")
 			return nil
 		}
-		return errors.New("usage: devices | devices enable <xray-container> | devices revoke <device-id>")
+		if len(args) == 2 && args[0] == "restore" {
+			d := c.device(args[1])
+			if d == nil {
+				return errors.New("unknown device")
+			}
+			if !d.Disabled {
+				return nil
+			}
+			in, err := readInbound(c)
+			if err != nil {
+				return err
+			}
+			if c.activeDevices() >= maxActiveDevices {
+				return errors.New("device limit reached")
+			}
+			d.Disabled = false
+			// A fresh credential: parameters copied before the revocation stay dead.
+			d.UUID = newUUID()
+			if err := commitDeviceChange(path, c, d.ID, in.flow()); err != nil {
+				return err
+			}
+			fmt.Println("device restored with a new VPN credential; sign in on that phone again")
+			return nil
+		}
+		return errors.New("usage: devices | devices enable <xray-container> | devices revoke <device-id> | devices restore <device-id>")
 	})
 }

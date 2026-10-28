@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -270,4 +271,92 @@ func TestSharedCredentialIsNeverADeviceOne(t *testing.T) {
 	}
 	// New devices still register: the flow comes from the remaining clients.
 	responseToken(t, register(h, issueToken(c.TokenSecret, &c.Users[0], time.Now().Add(-2*time.Minute)), testDeviceB))
+}
+
+func deviceLogin(h *handler, user, pass, id string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(map[string]string{"username": user, "password": pass, "device_id": id, "device_name": "Phone"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/login", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	h.login(rec, req)
+	return rec
+}
+
+func errorCode(rec *httptest.ResponseRecorder) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &e)
+	return e.Error
+}
+
+func TestDeviceRefusalsAreExplained(t *testing.T) {
+	h, path, c := managedSetup(t)
+	hash, _ := hashPassword("kids password")
+	c.Users = append(c.Users, User{Name: "kids", PasswordHash: hash})
+	if err := saveConfig(path, c); err != nil {
+		t.Fatal(err)
+	}
+	tokenA := responseToken(t, deviceLogin(h, "family", "correct horse", testDeviceA))
+
+	// Same phone, another account: the right password must not look wrong.
+	if rec := deviceLogin(h, "kids", "kids password", testDeviceA); rec.Code != 401 || errorCode(rec) != "device_other_account" {
+		t.Fatalf("other account: %d %s", rec.Code, rec.Body)
+	}
+	responseToken(t, deviceLogin(h, "kids", "kids password", testDeviceB))
+	if rec := deviceLogin(h, "kids", "wrong", testDeviceB); errorCode(rec) != "invalid_credentials" {
+		t.Fatalf("wrong password: %s", rec.Body)
+	}
+
+	if err := cmdDevices(path, []string{"revoke", testDeviceA}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := doProfile(h, tokenA); rec.Code != 401 || errorCode(rec) != "device_revoked" {
+		t.Fatalf("revoked profile: %d %s", rec.Code, rec.Body)
+	}
+	if rec := doProfile(h, tokenA+"x"); errorCode(rec) != "unauthorized" {
+		t.Fatalf("a forged token must not learn the device state: %s", rec.Body)
+	}
+	if rec := deviceLogin(h, "family", "correct horse", testDeviceA); rec.Code != 401 || errorCode(rec) != "device_revoked" {
+		t.Fatalf("revoked login: %d %s", rec.Code, rec.Body)
+	}
+
+	c, _ = loadConfig(path)
+	oldUUID := c.device(testDeviceA).UUID
+	if err := cmdDevices(path, []string{"restore", testDeviceA}); err != nil {
+		t.Fatal(err)
+	}
+	if doProfile(h, tokenA).Code != 401 {
+		t.Fatal("restore revived a token bound to the revoked credential")
+	}
+	token := responseToken(t, deviceLogin(h, "family", "correct horse", testDeviceA))
+	if got := profileUUID(t, doProfile(h, token)); got == oldUUID {
+		t.Fatal("restored device kept its revoked credential")
+	}
+	data, _ := os.ReadFile(c.XrayConfig)
+	if strings.Contains(string(data), oldUUID) {
+		t.Fatal("revoked UUID is back in Xray")
+	}
+}
+
+func TestRevokedDevicesDoNotCountTowardsLimit(t *testing.T) {
+	h, path, c := managedSetup(t)
+	fill := func(disabled bool) {
+		c.Devices = nil
+		for i := range maxActiveDevices {
+			c.Devices = append(c.Devices, Device{
+				ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i+10), Account: "family",
+				UUID: newUUID(), Disabled: disabled,
+			})
+		}
+		if err := saveConfig(path, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := issueToken(c.TokenSecret, &c.Users[0], time.Now())
+	fill(false)
+	if register(h, token, testDeviceA).Code == 200 {
+		t.Fatal("limit of active devices not enforced")
+	}
+	fill(true)
+	responseToken(t, register(h, token, testDeviceA))
 }

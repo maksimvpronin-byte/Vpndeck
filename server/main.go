@@ -269,8 +269,9 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 		return e
 	})
 	if err != nil {
-		if errors.Is(err, errDeviceRejected) {
-			writeError(w, http.StatusUnauthorized, "invalid_credentials")
+		if isDeviceRefusal(err) {
+			log.Printf("login refused: user=%q ip=%s device=%s: %v", u.Name, ip, req.DeviceID, err)
+			writeError(w, http.StatusUnauthorized, deviceErrorCode(err, "invalid_credentials"))
 			return
 		}
 		log.Printf("login profile failed: %v", err)
@@ -295,7 +296,7 @@ func (h *handler) profile(w http.ResponseWriter, r *http.Request) {
 	}
 	u, device, err := authenticateToken(c, token)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeError(w, http.StatusUnauthorized, deviceErrorCode(err, "unauthorized"))
 		return
 	}
 	p, err := buildDeviceProfile(c, u, device)
@@ -399,7 +400,7 @@ func (h *handler) registerDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		d, err := ensureDevice(h.configPath, c, u.Name, req.ID, req.Name, legacy)
 		if err != nil {
-			if errors.Is(err, errDeviceRejected) {
+			if isDeviceRefusal(err) {
 				status = 401
 			}
 			return err
@@ -408,7 +409,10 @@ func (h *handler) registerDevice(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		writeError(w, status, "device_registration_failed")
+		if status != 401 && status != 404 {
+			log.Printf("device registration failed: %v", err)
+		}
+		writeError(w, status, deviceErrorCode(err, "device_registration_failed"))
 		return
 	}
 	writeJSON(w, 200, result)
