@@ -2,7 +2,6 @@ package com.vpndeck.vpn
 
 import com.vpndeck.data.ApiClient
 import java.io.IOException
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -25,17 +24,14 @@ class ConnectionPolicyTest {
 
     @Test fun stopFlagIsCheckedAfterFetch() = runTest {
         var opened = false
-        try {
-            startWhenWanted({ "profile" }, { false }) { opened = true }
-            fail("Stopped connection was started")
-        } catch (_: CancellationException) { }
+        assertFalse(startWhenWanted({ "profile" }, { false }) { opened = true })
         assertFalse(opened)
     }
 
     @Test fun networkFailureCanUseOfflineCache() = runTest {
         val result = refreshOrCached(
             fetch = { throw IOException("offline") }, cached = { "cached" },
-            save = { fail("Offline response must not overwrite cache") }, isCurrent = { true },
+            save = { fail("Offline response must not overwrite cache"); false }, isCurrent = { true },
             rejected = { fail("Network outage must keep session") }, unavailable = {},
         )
         assertEquals("cached", result)
@@ -46,7 +42,7 @@ class ConnectionPolicyTest {
         val result = refreshOrCached<String>(
             fetch = { throw ApiClient.ApiException.Unauthorized() },
             cached = { fail("Revoked credentials must not use cached profile"); "cached" },
-            save = { fail("No profile may be saved") }, isCurrent = { true },
+            save = { fail("No profile may be saved"); false }, isCurrent = { true },
             rejected = { rejected = true }, unavailable = { fail("401 is not an outage") },
         )
         assertNull(result)
@@ -58,20 +54,39 @@ class ConnectionPolicyTest {
         assertNull(refreshOrCached<String>(
             fetch = { throw ApiClient.ApiException.PinMismatch() },
             cached = { fail("Changed key must not use cached profile"); "cached" },
-            save = {}, isCurrent = { true }, rejected = { rejected = true }, unavailable = {},
+            save = { true }, isCurrent = { true }, rejected = { rejected = true }, unavailable = {},
         ))
         assertTrue(rejected)
     }
 
-    @Test fun responseForOldSessionIsDiscarded() = runTest {
+    @Test fun responseForOldSessionIsDiscardedWithoutCancelling() = runTest {
         var saved = false
-        try {
+        val result = refreshOrCached(
+            fetch = { "old profile" }, cached = { "cache" }, save = { saved = true; true },
+            isCurrent = { false }, rejected = {}, unavailable = {},
+        )
+        assertNull(result)
+        assertFalse(saved)
+    }
+
+    @Test fun sessionReplacedDuringSaveIsDiscarded() = runTest {
+        // A parallel refresh stored a new token first: this answer is dropped, the caller carries on.
+        assertNull(refreshOrCached(
+            fetch = { "profile" }, cached = { "cache" }, save = { false },
+            isCurrent = { true }, rejected = {}, unavailable = {},
+        ))
+    }
+
+    @Test fun loopSurvivesReplacedSession() = runTest {
+        // The watchdog and the refresh loop call this repeatedly; a replaced session must not end them.
+        var rounds = 0
+        repeat(3) {
             refreshOrCached(
-                fetch = { "old profile" }, cached = { "cache" }, save = { saved = true },
+                fetch = { "profile" }, cached = { null }, save = { false },
                 isCurrent = { false }, rejected = {}, unavailable = {},
             )
-            fail("Stale response accepted")
-        } catch (_: CancellationException) { }
-        assertFalse(saved)
+            rounds++
+        }
+        assertEquals(3, rounds)
     }
 }

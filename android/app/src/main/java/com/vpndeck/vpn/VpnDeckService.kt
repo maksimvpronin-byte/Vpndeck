@@ -148,8 +148,12 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
             // Fresh parameters first, so server-side changes (port, camouflage, keys) apply on
             // the next connect instead of after the 6-hour refresh. A short timeout keeps a
             // slow or unreachable auth server from delaying the VPN; then the cache is used.
-            startWhenWanted(
-                fetch = { refreshProfileNow(START_FETCH_TIMEOUT_MS, allowCache = true) ?: error(getString(R.string.err_no_profile)) },
+            // No device migration here: it may restart Xray and outlast the short timeout.
+            val opened = startWhenWanted(
+                fetch = {
+                    refreshProfileNow(START_FETCH_TIMEOUT_MS, allowCache = true, migrate = false)
+                        ?: error(getString(R.string.err_no_profile))
+                },
                 wanted = { Store.wantConnected && Store.session.value != null },
             ) { current ->
                 profile = current
@@ -161,6 +165,11 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
                 server.startOrReloadService(buildConfig(current), OverrideOptions())
                 VpnState.set(VpnState.Status.Running)
                 startInForeground(runningText())
+            }
+            if (!opened) {
+                // Disconnected or logged out while the profile was loading.
+                stop()
+                return
             }
             scheduleRefresh()
             watchAppSelection()
@@ -246,15 +255,29 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
         false
     }
 
-    /** Fetches the profile directly (our own traffic never goes through the tunnel). */
-    private suspend fun refreshProfileNow(timeoutMs: Int = 15_000, allowCache: Boolean = false): Profile? {
+    /**
+     * Fetches the profile directly (our own traffic never goes through the tunnel).
+     * With [migrate], a session from before 0.1.6 also moves to its own device credential.
+     */
+    private suspend fun refreshProfileNow(
+        timeoutMs: Int = 15_000,
+        allowCache: Boolean = false,
+        migrate: Boolean = true,
+    ): Profile? {
         val session = Store.session.value ?: return null
         return refreshOrCached(
-            fetch = { ApiClient.fetchSession(session, timeoutMs) },
+            fetch = {
+                if (migrate) {
+                    ApiClient.fetchSession(session, timeoutMs)
+                } else {
+                    ApiClient.LoginResult(session.token, ApiClient.fetchProfile(session, timeoutMs))
+                }
+            },
             cached = { if (allowCache) Store.profile?.let { ApiClient.LoginResult(session.token, it) } else null },
             save = {
-                if (!Store.saveSessionIfCurrent(session, it.token, it.profile)) throw CancellationException("Session changed")
-                VpnState.apiResult.value = "Доступен"
+                Store.saveSessionIfCurrent(session, it.token, it.profile).also { saved ->
+                    if (saved) VpnState.apiResult.value = "Доступен"
+                }
             },
             isCurrent = { Store.session.value == session },
             rejected = { error ->
@@ -270,10 +293,12 @@ class VpnDeckService : VpnService(), PlatformInterface, CommandServerHandler {
     private fun scheduleRefresh() {
         refreshJob?.cancel()
         refreshJob = scope.launch {
-            // Refresh soon after connecting if the cache is stale, then on the server's interval.
+            // Refresh soon after connecting if the cache is stale or the session still has to
+            // move to its own device credential (connecting skips that), then on the server's interval.
             val interval = (profile?.refreshIntervalSec ?: 6 * 3600L) * 1000
             val age = System.currentTimeMillis() - Store.profileFetchedAt
-            delay(if (age > interval) 5_000 else interval - age)
+            val legacy = Store.session.value?.token?.startsWith("v1.") == true
+            delay(if (age > interval || legacy) 5_000 else interval - age)
             while (true) {
                 val fresh = refreshProfileNow()
                 if (fresh != null && fresh.raw != profile?.raw) {
