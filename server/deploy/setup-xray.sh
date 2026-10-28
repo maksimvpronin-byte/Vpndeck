@@ -10,14 +10,16 @@
 # exactly what Russian mobile DPI learned to block in 2026.
 #
 # Tunables (env): XRAY_PORT=443  XRAY_DIR=/opt/xray-reality-8443
-#                 XRAY_NAME=xray-reality-8443  XRAY_IMAGE=ghcr.io/xtls/xray-core:latest
+#                 XRAY_NAME=xray-reality-8443  XRAY_IMAGE=ghcr.io/xtls/xray-core:26.10.21
+# The image is pinned so two servers set up months apart run the same Xray;
+# bump it deliberately (and check the x25519 output parsing below).
 set -euo pipefail
 
 PORT=${XRAY_PORT:-443}
 SNI=${XRAY_SNI:?set XRAY_SNI to a site found by find-sni.py}
 DIR=${XRAY_DIR:-/opt/xray-reality-8443}
 NAME=${XRAY_NAME:-xray-reality-8443}
-IMAGE=${XRAY_IMAGE:-ghcr.io/xtls/xray-core:latest}
+IMAGE=${XRAY_IMAGE:-ghcr.io/xtls/xray-core:26.10.21}
 CONFIG="$DIR/config.json"
 
 command -v docker >/dev/null || { echo "docker is not installed" >&2; exit 1; }

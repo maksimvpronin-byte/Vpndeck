@@ -56,6 +56,9 @@ jobs:
           distribution: temurin
           java-version: 21
 
+      # Go for the core (gomobile + sing-box), separate from server/go.mod: the core's
+      # linkname tricks follow the Go its sing-box version supports. Bump it together
+      # with SING_BOX_VERSION in scripts/build-libbox.sh (that also refreshes the cache).
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
@@ -151,6 +154,9 @@ jobs:
           # "What's new" comes from the annotated tag's message (scripts/release.sh writes it).
           git fetch -q --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           whatsnew=$(git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)' | sed '/^-----BEGIN/,$d')
+          # One source of truth for the release key's certificate: the check that enforced it.
+          cert=$(sed -n 's/^EXPECTED_CERT=//p' scripts/verify-apks.sh)
+          [ -n "$cert" ] || { echo "::error::EXPECTED_CERT not found in scripts/verify-apks.sh"; exit 1; }
           {
             echo "${whatsnew:-Обновление VpnDeck.}"
             echo
@@ -161,7 +167,7 @@ jobs:
             echo '```'
             cat out/SHA256SUMS
             echo '```'
-            echo 'Сертификат подписи (SHA-256): `58d19c912cdb56e5c1360b0f053716eb6a897518099a4e0f39def6b2cfd2df84`'
+            echo "Сертификат подписи (SHA-256): \`$cert\`"
           } > notes.md
           gh release create "$GITHUB_REF_NAME" out/*.apk \
             --repo "$GITHUB_REPOSITORY" --draft \
