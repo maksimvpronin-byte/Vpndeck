@@ -80,7 +80,7 @@ func authenticateToken(c *Config, token string) (*User, *Device, error) {
 			if d.Account != u.Name {
 				return nil, nil, errDeviceRejected
 			}
-			if d.Disabled {
+			if d.Disabled || d.LegacyTokenRevoked {
 				return nil, nil, errDeviceRevoked
 			}
 			return u, d, nil

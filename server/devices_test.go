@@ -338,6 +338,96 @@ func TestDeviceRefusalsAreExplained(t *testing.T) {
 	}
 }
 
+func TestDeviceRestoreKeepsLegacyTokensRevoked(t *testing.T) {
+	for _, oldConfig := range []bool{false, true} {
+		t.Run(fmt.Sprintf("old_config=%t", oldConfig), func(t *testing.T) {
+			h, path, c := managedSetup(t)
+			legacy := issueToken(c.TokenSecret, &c.Users[0], time.Now())
+			oldToken := responseToken(t, register(h, legacy, testDeviceA))
+			if err := cmdDevices(path, []string{"revoke", testDeviceA}); err != nil {
+				t.Fatal(err)
+			}
+			if oldConfig {
+				// A device revoked by an older server has no persistent token tombstone.
+				c, err := loadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.device(testDeviceA).LegacyTokenRevoked = false
+				if err := saveConfig(path, c); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if rec := doProfile(h, legacy); rec.Code != 401 {
+				t.Fatalf("revoked migration token: %d %s", rec.Code, rec.Body)
+			}
+			if err := cmdDevices(path, []string{"restore", testDeviceA}); err != nil {
+				t.Fatal(err)
+			}
+			for _, token := range []string{legacy, oldToken} {
+				if rec := doProfile(h, token); rec.Code != 401 {
+					t.Fatalf("restore revived an old token: %d", rec.Code)
+				}
+			}
+			for _, id := range []string{testDeviceA, testDeviceB} {
+				if rec := register(h, legacy, id); rec.Code != 401 {
+					t.Fatalf("old migration token registered device %s: %d", id, rec.Code)
+				}
+			}
+			token := responseToken(t, deviceLogin(h, "family", "correct horse", testDeviceA))
+			if rec := doProfile(h, token); rec.Code != 200 {
+				t.Fatalf("fresh login rejected: %d", rec.Code)
+			}
+			if rec := doProfile(h, legacy); rec.Code != 401 {
+				t.Fatalf("fresh login revived the old migration token: %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestDeviceManagementWithNoRemainingClients(t *testing.T) {
+	for _, operation := range []string{"restore", "login", "migrate"} {
+		t.Run(operation, func(t *testing.T) {
+			h, path, c := managedSetup(t)
+			responseToken(t, deviceLogin(h, "family", "correct horse", testDeviceA))
+			// Remove the shared credential, then revoke the only remaining device.
+			editXrayClients(t, c.XrayConfig, func(clients []any) []any {
+				kept := make([]any, 0)
+				for _, raw := range clients {
+					cl := raw.(map[string]any)
+					email, _ := cl["email"].(string)
+					if strings.HasPrefix(email, deviceEmailPrefix) {
+						kept = append(kept, raw)
+					}
+				}
+				return kept
+			})
+			if err := cmdDevices(path, []string{"revoke", testDeviceA}); err != nil {
+				t.Fatal(err)
+			}
+			var token string
+			switch operation {
+			case "restore":
+				if err := cmdDevices(path, []string{"restore", testDeviceA}); err != nil {
+					t.Fatalf("restore with no remaining clients: %v", err)
+				}
+				token = responseToken(t, deviceLogin(h, "family", "correct horse", testDeviceA))
+			case "login":
+				token = responseToken(t, deviceLogin(h, "family", "correct horse", testDeviceB))
+			case "migrate":
+				legacy := issueToken(c.TokenSecret, &c.Users[0], time.Now())
+				token = responseToken(t, register(h, legacy, testDeviceB))
+			}
+			if got := profileUUID(t, doProfile(h, token)); got == "" {
+				t.Fatal("device has no credential")
+			}
+			if rec := doLogin(h, "family", "correct horse"); rec.Code == 200 {
+				t.Fatal("device credential was shared with a legacy login")
+			}
+		})
+	}
+}
+
 func TestRevokedDevicesDoNotCountTowardsLimit(t *testing.T) {
 	h, path, c := managedSetup(t)
 	fill := func(disabled bool) {

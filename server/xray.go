@@ -81,8 +81,8 @@ func readInbound(c *Config) (*xrayInbound, error) {
 			continue
 		}
 		rs := in.StreamSettings.RealitySettings
-		if len(in.Settings.Clients) == 0 || len(rs.ServerNames) == 0 {
-			return nil, fmt.Errorf("inbound %q has no clients or serverNames", in.Tag)
+		if len(rs.ServerNames) == 0 {
+			return nil, fmt.Errorf("inbound %q has no serverNames", in.Tag)
 		}
 		port, err := parsePort(in.Port)
 		if err != nil {
@@ -138,11 +138,15 @@ func (in *xrayInbound) sharedClient(account string) (xrayClient, bool) {
 }
 
 // flow is what a new device credential gets: the same as the existing clients.
+// An empty inbound (e.g. after revoking its last device) starts with plain VLESS.
 func (in *xrayInbound) flow() string {
 	if cl, ok := in.sharedClient(""); ok {
 		return cl.Flow
 	}
-	return in.clients[0].Flow
+	if len(in.clients) > 0 {
+		return in.clients[0].Flow
+	}
+	return ""
 }
 
 func (in *xrayInbound) with(cl xrayClient) *VlessServer {

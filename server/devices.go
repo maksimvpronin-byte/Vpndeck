@@ -26,6 +26,9 @@ type Device struct {
 	Disabled        bool   `json:"disabled,omitempty"`
 	CreatedAt       int64  `json:"created_at"`
 	LegacyTokenHash string `json:"legacy_token_hash,omitempty"`
+	// Keep the hash as a tombstone: removing it would turn the old token back
+	// into a shared session. Restoring the device never restores this token.
+	LegacyTokenRevoked bool `json:"legacy_token_revoked,omitempty"`
 }
 
 // defaultXrayDir is where setup-xray.sh puts Xray; the systemd unit allows writing there.
@@ -140,6 +143,9 @@ func ensureDevice(path string, c *Config, account, id, name, legacyToken string)
 			return nil, errDeviceOtherAccount
 		}
 		if d.Disabled {
+			return nil, errDeviceRevoked
+		}
+		if legacyToken != "" && d.LegacyTokenRevoked {
 			return nil, errDeviceRevoked
 		}
 		// A consumed legacy token may authenticate only its original installation.
@@ -346,6 +352,7 @@ func cmdDevices(path string, args []string) error {
 				return nil
 			}
 			d.Disabled = true
+			d.LegacyTokenRevoked = d.LegacyTokenHash != ""
 			if err := commitDeviceChange(path, c, d.ID, ""); err != nil {
 				return err
 			}
@@ -368,6 +375,8 @@ func cmdDevices(path string, args []string) error {
 				return errors.New("device limit reached")
 			}
 			d.Disabled = false
+			// Also covers devices revoked before legacy-token tombstones existed.
+			d.LegacyTokenRevoked = d.LegacyTokenHash != ""
 			// A fresh credential: parameters copied before the revocation stay dead.
 			d.UUID = newUUID()
 			if err := commitDeviceChange(path, c, d.ID, in.flow()); err != nil {
