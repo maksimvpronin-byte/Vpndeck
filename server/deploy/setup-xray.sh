@@ -68,6 +68,12 @@ cat > "$CONFIG" <<EOF
       "sniffing": { "enabled": true, "destOverride": [ "http", "tls", "quic" ] }
     }
   ],
+  "routing": {
+    "domainStrategy": "IPOnDemand",
+    "rules": [
+      { "type": "field", "ip": ["geoip:private"], "outboundTag": "block" }
+    ]
+  },
   "outbounds": [
     { "protocol": "freedom", "tag": "direct" },
     { "protocol": "blackhole", "tag": "block" }

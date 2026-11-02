@@ -199,6 +199,9 @@ func cmdServe(path string) error {
 	return srv.ListenAndServeTLS("", "")
 }
 
+// Bound CPU-heavy authentication work without accumulating waiting requests.
+var passwordChecks = make(chan struct{}, 4)
+
 type handler struct {
 	configPath string
 	limiter    *limiter
@@ -214,7 +217,7 @@ type profile struct {
 func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	now := time.Now()
-	if h.limiter.locked(ip, now) {
+	if !h.limiter.attempt(ip, now) {
 		writeError(w, http.StatusTooManyRequests, "too_many_attempts")
 		return
 	}
@@ -238,19 +241,28 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
+	select {
+	case passwordChecks <- struct{}{}:
+	default:
+		writeError(w, http.StatusTooManyRequests, "too_many_attempts")
+		return
+	}
 	u := c.user(strings.TrimSpace(req.Username))
-	ok := u != nil && !u.Disabled && checkPassword(u.PasswordHash, req.Password)
+	hash := ""
+	if u != nil {
+		hash = u.PasswordHash
+	} else {
+		hash = dummyHash()
+	}
+	passwordOK := checkPassword(hash, req.Password)
+	<-passwordChecks
+	ok := passwordOK && u != nil && !u.Disabled
 	if !ok {
-		if u == nil {
-			// Burn the same time as a real check so usernames cannot be probed.
-			checkPassword(dummyHash(), req.Password)
-		}
-		h.limiter.fail(ip, now)
 		log.Printf("login failed: user=%q ip=%s", req.Username, ip)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials")
 		return
 	}
-	h.limiter.success(ip)
+	h.limiter.success(ip, now)
 
 	var result any
 	err = withConfigLock(h.configPath, func(current *Config) error {
@@ -303,6 +315,10 @@ func (h *handler) profile(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := buildDeviceProfile(c, u, device)
 	if err != nil {
+		if isDeviceRefusal(err) {
+			writeError(w, http.StatusUnauthorized, deviceErrorCode(err, "unauthorized"))
+			return
+		}
 		log.Printf("build profile: %v", err)
 		writeError(w, http.StatusInternalServerError, "server_error")
 		return
@@ -353,6 +369,9 @@ func loginResponse(c *Config, u *User, d *Device, now time.Time) (any, error) {
 
 // buildDeviceProfile hands a device its own credential and everyone else the shared one.
 func buildDeviceProfile(c *Config, u *User, d *Device) (*profile, error) {
+	if c.RequireDevice && d == nil {
+		return nil, errDeviceRequired
+	}
 	var s *VlessServer
 	var err error
 	if d != nil {

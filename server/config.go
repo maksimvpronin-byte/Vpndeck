@@ -23,6 +23,8 @@ type Config struct {
 	TLSCert            string   `json:"tls_cert"`
 	TLSKey             string   `json:"tls_key"`
 	Users              []User   `json:"users"`
+	RequireDevice      bool     `json:"require_device,omitempty"`
+	DisableNewDevices  bool     `json:"disable_new_devices,omitempty"`
 	ManageDevices      bool     `json:"manage_devices,omitempty"`
 	XrayRestartCommand []string `json:"xray_restart_command,omitempty"`
 	Devices            []Device `json:"devices,omitempty"`
@@ -51,6 +53,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if c.Fingerprint == "" {
 		c.Fingerprint = "chrome"
+	}
+	if c.RequireDevice && !c.ManageDevices {
+		return nil, errors.New("require_device requires manage_devices")
 	}
 	dir := filepath.Dir(path)
 	if c.TLSCert == "" {

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -122,7 +123,7 @@ func tokenMAC(secret, user, issued, passwordHash string) string {
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }
 
-// limiter locks an IP out after repeated failed logins.
+// limiter reserves login attempts atomically per address or IPv6 prefix.
 type limiter struct {
 	mu    sync.Mutex
 	state map[string]*attempts
@@ -131,6 +132,7 @@ type limiter struct {
 type attempts struct {
 	fails       int
 	first       time.Time
+	last        time.Time
 	lockedUntil time.Time
 }
 
@@ -142,41 +144,55 @@ const (
 
 func newLimiter() *limiter { return &limiter{state: map[string]*attempts{}} }
 
-func (l *limiter) locked(ip string, now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	a := l.state[ip]
-	return a != nil && now.Before(a.lockedUntil)
+// limiterKey shares the budget across an IPv6 /64 and normalizes mapped IPv4.
+func limiterKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	if a.Is6() {
+		return netip.PrefixFrom(a, 64).Masked().String()
+	}
+	return a.String()
 }
 
-func (l *limiter) fail(ip string, now time.Time) {
+// attempt reserves a password check before expensive work begins.
+func (l *limiter) attempt(ip string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	ip = limiterKey(ip)
 	a := l.state[ip]
-	if a == nil || now.Sub(a.first) > failWindow {
+	if a != nil && now.Before(a.lockedUntil) {
+		return false
+	}
+	if a == nil || now.Sub(a.first) >= failWindow {
 		a = &attempts{first: now}
 		l.state[ip] = a
 	}
+	a.last = now
 	a.fails++
 	if a.fails >= maxFails {
 		a.lockedUntil = now.Add(lockoutTime)
-		a.fails = 0
-		a.first = now
 	}
-	// Opportunistic cleanup so the map cannot grow without bound.
 	if len(l.state) > 10_000 {
 		for k, v := range l.state {
-			if now.After(v.lockedUntil) && now.Sub(v.first) > failWindow {
+			if !now.Before(v.lockedUntil) && now.Sub(v.first) >= failWindow {
 				delete(l.state, k)
 			}
 		}
 	}
+	return true
 }
 
-func (l *limiter) success(ip string) {
+func (l *limiter) success(ip string, started time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.state, ip)
+	key := limiterKey(ip)
+	// An older successful request must not erase newer reservations.
+	if a := l.state[key]; a != nil && a.last == started {
+		delete(l.state, key)
+	}
 }
 
 func issueDeviceToken(c *Config, u *User, d *Device, now time.Time) string {

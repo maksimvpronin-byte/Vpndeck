@@ -50,7 +50,8 @@ fun LoginScreen() {
     val scope = rememberCoroutineScope()
     var address by rememberSaveable { mutableStateOf(Store.lastHost?.let { h -> if (Store.lastPort == ApiClient.DEFAULT_PORT) h else "$h:${Store.lastPort}" } ?: "") }
     var username by rememberSaveable { mutableStateOf(Store.lastAccount ?: "") }
-    var password by rememberSaveable { mutableStateOf("") }
+    // Passwords must not be written into Android saved instance state.
+    var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     // Why the previous session ended (device revoked, password changed) until the next attempt.
@@ -68,6 +69,7 @@ fun LoginScreen() {
             error = null
             try {
                 val r = ApiClient.login(host, port, pin, username.trim(), password)
+                password = ""
                 Store.saveLogin(Store.Session(host, port, pin, r.profile.account.ifEmpty { username.trim() }, r.token), r.profile)
             } catch (e: ApiClient.ApiException.PinMismatch) {
                 pinMismatch = true

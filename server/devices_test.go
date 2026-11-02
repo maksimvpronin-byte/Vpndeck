@@ -483,3 +483,60 @@ func TestXrayConfigKeepsItsLayout(t *testing.T) {
 		t.Fatalf("clients not updated as expected:\n%s", text)
 	}
 }
+
+func TestRequireDeviceAndClosedRegistration(t *testing.T) {
+	h, path, c := managedSetup(t)
+	legacy := issueToken(c.TokenSecret, &c.Users[0], time.Now())
+	c.RequireDevice = true
+	if err := saveConfig(path, c); err != nil {
+		t.Fatal(err)
+	}
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"login":   doLogin(h, "family", "correct horse"),
+		"profile": doProfile(h, legacy),
+	} {
+		if rec.Code != 401 || errorCode(rec) != "device_required" {
+			t.Fatalf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	// Existing legacy sessions can still migrate to a device while enrollment is open.
+	if rec := register(h, legacy, testDeviceA); rec.Code != 200 {
+		t.Fatalf("migration: %d %s", rec.Code, rec.Body)
+	}
+	c, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.DisableNewDevices = true
+	if err := saveConfig(path, c); err != nil {
+		t.Fatal(err)
+	}
+	if rec := deviceLogin(h, "family", "correct horse", testDeviceA); rec.Code != 200 {
+		t.Fatalf("existing device: %d %s", rec.Code, rec.Body)
+	}
+	if rec := deviceLogin(h, "family", "correct horse", testDeviceB); rec.Code != 401 || errorCode(rec) != "device_registration_closed" {
+		t.Fatalf("new device: %d %s", rec.Code, rec.Body)
+	}
+	if err := cmdDevices(path, []string{"revoke", testDeviceA}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := deviceLogin(h, "family", "correct horse", testDeviceA); rec.Code != 401 || errorCode(rec) != "device_revoked" {
+		t.Fatalf("revoked device: %d %s", rec.Code, rec.Body)
+	}
+	fresh := issueToken(c.TokenSecret, &c.Users[0], time.Now().Add(time.Second))
+	if rec := register(h, fresh, testDeviceB); rec.Code != 401 || errorCode(rec) != "device_registration_closed" {
+		t.Fatalf("legacy registration bypass: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestRequireDeviceNeedsManagement(t *testing.T) {
+	_, path, c := managedSetup(t)
+	c.ManageDevices = false
+	c.RequireDevice = true
+	if err := saveConfig(path, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("accepted require_device without management")
+	}
+}

@@ -32,6 +32,8 @@ object ApiClient {
         open class Unauthorized(message: String = "Сессия недействительна, войдите заново") : ApiException(message)
         /** The admin revoked this phone (`vpndeck-server devices revoke`); a new login won't help. */
         class DeviceRevoked : Unauthorized("Это устройство отключено на сервере. Обратитесь к администратору")
+        class DeviceRequired : Unauthorized("Сервер требует вход с устройством. Войдите заново; если ошибка повторяется, обновите приложение")
+        class RegistrationClosed : Unauthorized("Регистрация новых устройств закрыта. Обратитесь к администратору")
         class PinMismatch : ApiException("Ключ сервера изменился! Возможен перехват соединения")
         class Server(code: Int) : ApiException("Ошибка сервера ($code)")
     }
@@ -75,7 +77,7 @@ object ApiClient {
             }
             when (code) {
                 200 -> parseLogin(text)
-                401 -> throw if (errorCode(text) == DEVICE_REVOKED) ApiException.DeviceRevoked() else ApiException.InvalidCredentials()
+                401 -> throw unauthorized(text, login = true)
                 429 -> throw ApiException.TooManyAttempts()
                 else -> throw ApiException.Server(code)
             }
@@ -119,8 +121,12 @@ object ApiClient {
         return LoginResult(o.getString("token"), Profile.parse(o.getJSONObject("profile").toString()))
     }
 
-    private fun unauthorized(text: String): ApiException =
-        if (errorCode(text) == DEVICE_REVOKED) ApiException.DeviceRevoked() else ApiException.Unauthorized()
+    internal fun unauthorized(text: String, login: Boolean = false): ApiException = when (errorCode(text)) {
+        DEVICE_REVOKED -> ApiException.DeviceRevoked()
+        "device_required" -> ApiException.DeviceRequired()
+        "device_registration_closed" -> ApiException.RegistrationClosed()
+        else -> if (login) ApiException.InvalidCredentials() else ApiException.Unauthorized()
+    }
 
     /** The server's reason for a refusal ("device_revoked", …); empty if it gave none. */
     internal fun errorCode(text: String): String = runCatching { JSONObject(text).optString("error") }.getOrDefault("")

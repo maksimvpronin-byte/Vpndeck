@@ -26,4 +26,13 @@ class ApiClientTest {
         assertEquals("", ApiClient.errorCode(""))
         assertEquals("", ApiClient.errorCode("<html>"))
     }
+    @Test fun preservesDeviceRefusalsDuringLoginAndRefresh() {
+        for (login in listOf(false, true)) {
+            assertTrue(ApiClient.unauthorized("""{"error":"device_revoked"}""", login) is ApiClient.ApiException.DeviceRevoked)
+            assertTrue(ApiClient.unauthorized("""{"error":"device_required"}""", login) is ApiClient.ApiException.DeviceRequired)
+            assertTrue(ApiClient.unauthorized("""{"error":"device_registration_closed"}""", login) is ApiClient.ApiException.RegistrationClosed)
+        }
+        assertTrue(ApiClient.unauthorized("{}", true) is ApiClient.ApiException.InvalidCredentials)
+        assertTrue(ApiClient.unauthorized("not json") is ApiClient.ApiException.Unauthorized)
+    }
 }

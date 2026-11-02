@@ -37,7 +37,9 @@ const defaultXrayDir = "/opt/xray-reality-8443"
 var (
 	// errDeviceRejected: the request can't be tied to this device (a token of
 	// another installation, a consumed migration token, credentials changed meanwhile).
-	errDeviceRejected = errors.New("device rejected")
+	errDeviceRejected     = errors.New("device rejected")
+	errDeviceRequired     = errors.New("device required")
+	errRegistrationClosed = errors.New("device registration closed")
 	// errDeviceRevoked: the admin revoked this installation with `devices revoke`.
 	errDeviceRevoked = errors.New("device access revoked")
 	// errDeviceOtherAccount: this installation is registered to a different account.
@@ -53,6 +55,10 @@ const xrayRestartTimeout = 25 * time.Second
 // still refused. The status stays 401 in every case, so older apps behave as before.
 func deviceErrorCode(err error, fallback string) string {
 	switch {
+	case errors.Is(err, errDeviceRequired):
+		return "device_required"
+	case errors.Is(err, errRegistrationClosed):
+		return "device_registration_closed"
 	case errors.Is(err, errDeviceRevoked):
 		return "device_revoked"
 	case errors.Is(err, errDeviceOtherAccount):
@@ -62,7 +68,7 @@ func deviceErrorCode(err error, fallback string) string {
 }
 
 func isDeviceRefusal(err error) bool {
-	return errors.Is(err, errDeviceRejected) || errors.Is(err, errDeviceRevoked) || errors.Is(err, errDeviceOtherAccount)
+	return errors.Is(err, errDeviceRequired) || errors.Is(err, errRegistrationClosed) || errors.Is(err, errDeviceRejected) || errors.Is(err, errDeviceRevoked) || errors.Is(err, errDeviceOtherAccount)
 }
 
 func (c *Config) device(id string) *Device {
@@ -153,6 +159,9 @@ func ensureDevice(path string, c *Config, account, id, name, legacyToken string)
 			return nil, errDeviceRejected
 		}
 		return d, nil
+	}
+	if c.DisableNewDevices {
+		return nil, errRegistrationClosed
 	}
 	// Revoked records stay (they keep consumed migration tokens dead) but don't count.
 	if c.activeDevices() >= maxActiveDevices {
